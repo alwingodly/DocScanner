@@ -2,8 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.hilt.android)       // NEW
-    kotlin("kapt")                          // NEW: for Hilt annotation processing
+    alias(libs.plugins.hilt.android)
+    kotlin("kapt")
 }
 
 android {
@@ -22,8 +22,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true                  // Changed: enable for prod
-            isShrinkResources = true                // NEW: remove unused resources
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -31,11 +31,11 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17    // Changed: 11 → 17
+        sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "17"                                // Changed: 11 → 17
+        jvmTarget = "17"
     }
     buildFeatures {
         compose = true
@@ -44,7 +44,7 @@ android {
 
 dependencies {
 
-    // ── Core (existing) ──
+    // ── Core ──
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -53,43 +53,50 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
-    implementation("cz.adaptech.tesseract4android:tesseract4android:4.7.0")
+
+    // ── Room ──
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     kapt(libs.androidx.room.compiler)
-    // ── NEW: CameraX ──
+
+    // ── CameraX ──
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
-    // ── NEW: OpenCV (edge detection, perspective warp, filters) ──
-    implementation(libs.opencv)
+    // ── ML Kit (replaces OpenCV + Tesseract) ──
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:object-detection:17.0.2")
+    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")
 
-    // ── NEW: Hilt DI ──
+    // ── ExifInterface (for correct image rotation from gallery/scanner) ──
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
+    // ── Hilt DI ──
     implementation(libs.hilt.android)
     kapt(libs.hilt.android.compiler)
     implementation(libs.hilt.navigation.compose)
 
-    // ── NEW: Navigation ──
+    // ── Navigation ──
     implementation(libs.androidx.navigation.compose)
 
-    // ── NEW: Coil (image loading) ──
+    // ── Coil ──
     implementation(libs.coil.compose)
 
-    // ── NEW: Accompanist Permissions ──
+    // ── Accompanist Permissions ──
     implementation(libs.accompanist.permissions)
 
-    // ── NEW: Coroutines ──
+    // ── Coroutines ──
     implementation(libs.kotlinx.coroutines.android)
 
-    // ── NEW: Lifecycle ViewModel for Compose ──
+    // ── Lifecycle ViewModel ──
     implementation(libs.androidx.lifecycle.viewmodel.compose)
 
-    // ── NEW: Extended Material Icons ──
+    // ── Extended Material Icons ──
     implementation(libs.androidx.compose.material.icons.extended)
 
-    // ── Testing (existing) ──
+    // ── Testing ──
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -99,7 +106,6 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
 
-// Hilt needs this
 kapt {
     correctErrorTypes = true
 }
