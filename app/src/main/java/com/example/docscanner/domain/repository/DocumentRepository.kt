@@ -35,7 +35,6 @@ class DocumentRepository @Inject constructor(
     suspend fun moveDocumentToFolder(documentId: String, targetFolderId: String) {
         val doc = documentDao.getDocumentById(documentId) ?: return
         if (doc.folderId == targetFolderId) return
-        // Count is a live subquery in FolderDao — no manual increment/decrement needed
         documentDao.updateDocumentFolder(documentId, targetFolderId)
     }
 }
@@ -49,6 +48,7 @@ fun DocumentEntity.toDomain() = Document(
     pageCount     = pageCount,
     thumbnailPath = thumbnailPath,
     pdfPath       = pdfPath,
+    docClassLabel = docClassLabel,
     createdAt     = createdAt
 )
 
@@ -59,5 +59,6 @@ fun Document.toEntity() = DocumentEntity(
     pageCount     = pageCount,
     thumbnailPath = thumbnailPath,
     pdfPath       = pdfPath,
+    docClassLabel = docClassLabel,
     createdAt     = createdAt
 )

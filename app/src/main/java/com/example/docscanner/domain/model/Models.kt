@@ -4,6 +4,23 @@ import android.graphics.Bitmap
 import android.graphics.PointF
 
 /**
+ * Document classification types from TFLite model.
+ *
+ * Named DocClassType (not DocumentType) to avoid clash with
+ * com.example.docscanner.presentation.viewer.DocumentType (PDF/IMAGE).
+ *
+ * ⚠️ The label-to-index mapping is in DocumentClassifier.LABELS.
+ */
+enum class DocClassType(val displayName: String) {
+    AADHAAR("Aadhaar"),
+    PAN("PAN Card"),
+    VOTER_ID("Voter ID"),
+    DRIVING_LICENSE("DL"),
+    PASSPORT("Passport"),
+    OTHER("Document")
+}
+
+/**
  * Represents a single scanned page.
  *
  * A page goes through this lifecycle:
@@ -11,6 +28,7 @@ import android.graphics.PointF
  *   2. Edge detection  → corners (4 points of document boundary)
  *   3. Crop & warp     → croppedBitmap (flattened top-down view)
  *   4. Filter applied   → enhancedBitmap (B&W, grayscale, etc.)
+ *   5. Classification   → docClassType (Aadhaar, PAN, etc.)
  *
  * displayBitmap always returns the most processed version available.
  */
@@ -21,6 +39,7 @@ data class ScannedPage(
     val enhancedBitmap: Bitmap? = null,
     val corners: DocumentCorners? = null,
     val filterType: FilterType = FilterType.ORIGINAL,
+    val docClassType: DocClassType? = null,       // null = not yet classified
     val createdAt: Long = System.currentTimeMillis()
 ) {
     val displayBitmap: Bitmap
@@ -28,18 +47,9 @@ data class ScannedPage(
 }
 
 enum class FolderExportType { PDF, IMAGES }
+
 /**
  * Four corners of a detected document.
- *
- * Why PointF? It stores x,y as floats — we need sub-pixel precision
- * for accurate perspective correction.
- *
- * Corner order matters for perspective transform:
- *   topLeft -------- topRight
- *   |                       |
- *   |     (document)        |
- *   |                       |
- *   bottomLeft --- bottomRight
  */
 data class DocumentCorners(
     val topLeft: PointF,
@@ -47,11 +57,9 @@ data class DocumentCorners(
     val bottomLeft: PointF,
     val bottomRight: PointF
 ) {
-    /** Convert to list in order: TL, TR, BR, BL (clockwise) */
     fun toList(): List<PointF> = listOf(topLeft, topRight, bottomRight, bottomLeft)
 
     companion object {
-        /** Create from a list of 4 points (TL, TR, BR, BL order) */
         fun fromList(points: List<PointF>): DocumentCorners {
             require(points.size == 4) { "Exactly 4 corners required" }
             return DocumentCorners(
@@ -64,17 +72,6 @@ data class DocumentCorners(
     }
 }
 
-/**
- * Image enhancement filters.
- *
- * ORIGINAL   → no processing, raw cropped image
- * ENHANCED   → CLAHE contrast + sharpening (good for photos/color docs)
- * GRAYSCALE  → simple gray conversion
- * BLACK_WHITE → Otsu's threshold (good for printed text)
- * MAGIC      → Adaptive threshold (best for handwritten + printed text)
- *
- * Each maps to a specific OpenCV operation in DocumentProcessor.
- */
 enum class FilterType(val displayName: String) {
     ORIGINAL("Original"),
     ENHANCED("Enhanced"),
@@ -83,12 +80,6 @@ enum class FilterType(val displayName: String) {
     MAGIC("Magic")
 }
 
-
-/**
- * Export format options.
- * PDF uses Android's built-in PdfDocument API (no extra library).
- * JPEG/PNG use standard Bitmap.compress().
- */
 enum class ExportFormat(val displayName: String, val extension: String) {
     PDF("PDF Document", "pdf"),
     JPEG("JPEG Image", "jpg"),
@@ -99,12 +90,11 @@ enum class ExportFormat(val displayName: String, val extension: String) {
 data class Folder(
     val id: String = System.currentTimeMillis().toString(),
     val name: String,
-    val icon: String = "📄",      // emoji icon
-    val exportType: FolderExportType = FolderExportType.PDF,  // ADD
+    val icon: String = "📄",
+    val exportType: FolderExportType = FolderExportType.PDF,
     val createdAt: Long = System.currentTimeMillis(),
     val documentCount: Int = 0
 )
-
 
 // ─── Document (saved scan inside a folder) ────────────
 data class Document(
@@ -112,7 +102,8 @@ data class Document(
     val folderId: String,
     val name: String,
     val pageCount: Int,
-    val thumbnailPath: String? = null,   // first page image path
-    val pdfPath: String? = null,         // saved PDF path
+    val thumbnailPath: String? = null,
+    val pdfPath: String? = null,
+    val docClassLabel: String? = null,    // store classification label for saved docs
     val createdAt: Long = System.currentTimeMillis()
 )

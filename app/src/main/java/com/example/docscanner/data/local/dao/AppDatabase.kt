@@ -1,15 +1,13 @@
-package com.example.docscanner.data.local.db
+package com.example.docscanner.data.local.dao
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
-import com.example.docscanner.data.local.dao.DocumentDao
-import com.example.docscanner.data.local.dao.FolderDao
 import com.example.docscanner.data.local.entity.DocumentEntity
 import com.example.docscanner.data.local.entity.FolderEntity
 
 @Database(
     entities     = [FolderEntity::class, DocumentEntity::class],
-    version      = 3,
+    version      = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

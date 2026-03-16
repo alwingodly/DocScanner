@@ -1,11 +1,12 @@
 package com.example.docscanner.presentation.shared
 
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.docscanner.data.classifier.DocumentClassifier
 import com.example.docscanner.data.export.DocumentExporter
 import com.example.docscanner.data.processor.DocumentProcessor
-import com.example.docscanner.data.processor.ImagePostProcessor
 import com.example.docscanner.domain.model.Document
 import com.example.docscanner.domain.model.DocumentCorners
 import com.example.docscanner.domain.model.ExportFormat
@@ -25,9 +26,9 @@ import javax.inject.Inject
 @HiltViewModel
 class ScannerViewModel @Inject constructor(
     private val documentProcessor: DocumentProcessor,
-    private val imagePostProcessor: ImagePostProcessor,
     val exporter: DocumentExporter,
-    private val documentRepository: DocumentRepository
+    private val documentRepository: DocumentRepository,
+    private val documentClassifier: DocumentClassifier
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ScannerState())
@@ -35,9 +36,14 @@ class ScannerViewModel @Inject constructor(
     private var brightnessJob: Job? = null
     private var originalCornersHash: Int = 0
 
+    override fun onCleared() {
+        super.onCleared()
+        documentClassifier.close()
+    }
+
     fun setTargetFolder(folderId: String, folderName: String, exportType: FolderExportType) {
         _state.value = _state.value.copy(
-            targetFolderId   = folderId,
+            targetFolderId = folderId,
             targetFolderName = folderName,
             targetExportType = exportType
         )
@@ -47,6 +53,9 @@ class ScannerViewModel @Inject constructor(
         val state = _state.value
         if (state.pages.isEmpty()) return
         _state.value = state.copy(isSaving = true)
+
+        // Get the classification label from the first page (for PDF) or per-page (for images)
+        val firstPageLabel = state.pages.firstOrNull()?.docClassType?.displayName
 
         viewModelScope.launch {
             try {
@@ -59,6 +68,7 @@ class ScannerViewModel @Inject constructor(
                             "${state.fileName}_thumb",
                             ExportFormat.JPEG
                         )
+
                         documentRepository.saveDocument(
                             Document(
                                 folderId      = state.targetFolderId,
@@ -66,6 +76,7 @@ class ScannerViewModel @Inject constructor(
                                 pageCount     = state.pages.size,
                                 thumbnailPath = thumbnailUri?.toString(),
                                 pdfPath       = pdfUri?.toString(),
+                                docClassLabel = firstPageLabel,
                                 createdAt     = System.currentTimeMillis()
                             )
                         )
@@ -77,7 +88,9 @@ class ScannerViewModel @Inject constructor(
                             state.fileName,
                             ExportFormat.JPEG
                         )
+
                         imageUris.forEachIndexed { index, uri ->
+                            val page = state.pages.getOrNull(index)
                             val pageName = if (state.pages.size == 1) state.fileName
                             else "${state.fileName}_p${index + 1}"
                             documentRepository.saveDocument(
@@ -87,6 +100,7 @@ class ScannerViewModel @Inject constructor(
                                     pageCount     = 1,
                                     thumbnailPath = uri?.toString(),
                                     pdfPath       = null,
+                                    docClassLabel = page?.docClassType?.displayName,
                                     createdAt     = System.currentTimeMillis()
                                 )
                             )
@@ -125,32 +139,37 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Called after every scan (ML Kit or gallery).
-     *
-     * Pipeline:
-     *   1. Perspective correct using detected/adjusted corners
-     *   2. Auto post-process (inversion, denoise, contrast, punch-hole, vividness)
-     *   3. Store result as the page's croppedBitmap + enhancedBitmap
-     */
     fun onPhotoCaptured(bitmap: Bitmap, detectedCorners: DocumentCorners? = null) {
         val pageId = System.currentTimeMillis().toString()
         val newPage = ScannedPage(id = pageId, originalBitmap = bitmap)
+
         _state.value = _state.value.copy(pages = _state.value.pages + newPage)
 
         viewModelScope.launch {
-            // Step 1: perspective correction
-            val corners  = detectedCorners ?: documentProcessor.detectEdges(bitmap)
-            val cropped  = documentProcessor.perspectiveTransform(bitmap, corners)
+            val corners = detectedCorners ?: documentProcessor.detectEdges(bitmap)
+            val cropped = documentProcessor.perspectiveTransform(bitmap, corners)
 
-            // Step 2: auto post-processing pipeline
-            val processed = imagePostProcessor.process(cropped)
+            Log.d("DocClassify", "──────────────────────────────────────")
+            Log.d("DocClassify", "Cropped bitmap: ${cropped.width}x${cropped.height}")
+
+            val docType = try {
+                val result = documentClassifier.classify(cropped)
+                Log.d("DocClassify", "Result: ${result.name}, displayName: ${result.displayName}")
+                result
+            } catch (e: Exception) {
+                Log.e("DocClassify", "Classification FAILED", e)
+                null
+            }
+
+            Log.d("DocClassify", "Final docType: ${docType?.name ?: "null"}")
+            Log.d("DocClassify", "──────────────────────────────────────")
 
             updatePage(pageId) {
                 it.copy(
-                    corners        = corners,
-                    croppedBitmap  = processed,
-                    enhancedBitmap = processed
+                    corners = corners,
+                    croppedBitmap = cropped,
+                    enhancedBitmap = cropped,
+                    docClassType = docType
                 )
             }
         }
@@ -178,10 +197,8 @@ class ScannerViewModel @Inject constructor(
             val page = _state.value.pages[index]
             originalCornersHash = page.corners.hashCode()
             _state.value = _state.value.copy(
-                editingPageIndex     = index,
-                editingFilter        = page.filterType,
-                showApplyToAllPrompt = false,
-                editDone             = false
+                editingPageIndex = index, editingFilter = page.filterType,
+                showApplyToAllPrompt = false, editDone = false
             )
         }
     }
@@ -192,8 +209,8 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun onEditFilterSelected(filterType: FilterType) {
-        val index  = _state.value.editingPageIndex ?: return
-        val page   = _state.value.pages.getOrNull(index) ?: return
+        val index = _state.value.editingPageIndex ?: return
+        val page = _state.value.pages.getOrNull(index) ?: return
         val source = page.croppedBitmap ?: page.originalBitmap
         _state.value = _state.value.copy(isProcessing = true, editingFilter = filterType)
         viewModelScope.launch {
@@ -204,8 +221,8 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun onEditBrightnessContrast(brightness: Double, contrast: Double) {
-        val index  = _state.value.editingPageIndex ?: return
-        val page   = _state.value.pages.getOrNull(index) ?: return
+        val index = _state.value.editingPageIndex ?: return
+        val page = _state.value.pages.getOrNull(index) ?: return
         val source = page.croppedBitmap ?: page.originalBitmap
         brightnessJob?.cancel()
         brightnessJob = viewModelScope.launch {
@@ -217,16 +234,16 @@ class ScannerViewModel @Inject constructor(
 
     fun onEditDone() {
         val index = _state.value.editingPageIndex ?: return
-        val page  = _state.value.pages.getOrNull(index) ?: return
+        val page = _state.value.pages.getOrNull(index) ?: return
         val cornersChanged = page.corners.hashCode() != originalCornersHash
 
         if (cornersChanged && page.corners != null) {
             _state.value = _state.value.copy(isProcessing = true)
             viewModelScope.launch {
-                val cropped   = documentProcessor.perspectiveTransform(page.originalBitmap, page.corners!!)
-                val enhanced  = documentProcessor.applyFilter(cropped, page.filterType)
+                val cropped = documentProcessor.perspectiveTransform(page.originalBitmap, page.corners!!)
+                val enhanced = documentProcessor.applyFilter(cropped, page.filterType)
                 updatePageAtIndex(index) { it.copy(croppedBitmap = cropped, enhancedBitmap = enhanced) }
-                _state.value  = _state.value.copy(isProcessing = false)
+                _state.value = _state.value.copy(isProcessing = false)
                 afterEditProcessing()
             }
         } else {
@@ -236,13 +253,9 @@ class ScannerViewModel @Inject constructor(
 
     private fun afterEditProcessing() {
         val index = _state.value.editingPageIndex ?: return
-        val page  = _state.value.pages.getOrNull(index) ?: return
-        val otherFilters = _state.value.pages
-            .filterIndexed { i, _ -> i != index }
-            .map { it.filterType }.toSet()
-        val shouldPrompt = _state.value.pages.size > 1 &&
-                otherFilters.isNotEmpty() &&
-                page.filterType !in otherFilters
+        val page = _state.value.pages.getOrNull(index) ?: return
+        val otherFilters = _state.value.pages.filterIndexed { i, _ -> i != index }.map { it.filterType }.toSet()
+        val shouldPrompt = _state.value.pages.size > 1 && otherFilters.isNotEmpty() && page.filterType !in otherFilters
         if (shouldPrompt) {
             _state.value = _state.value.copy(showApplyToAllPrompt = true)
         } else {
@@ -251,17 +264,17 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun onApplyEditingFilterToAll() {
-        val index  = _state.value.editingPageIndex ?: return
-        val page   = _state.value.pages.getOrNull(index) ?: return
-        val filter = page.filterType
+        val index = _state.value.editingPageIndex ?: return
+        val page = _state.value.pages.getOrNull(index) ?: return
+        val filterType = page.filterType
         _state.value = _state.value.copy(isProcessing = true, showApplyToAllPrompt = false)
         viewModelScope.launch {
             val updatedPages = _state.value.pages.map { p ->
                 if (p.id == page.id) p
                 else {
-                    val source   = p.croppedBitmap ?: p.originalBitmap
-                    val enhanced = documentProcessor.applyFilter(source, filter)
-                    p.copy(enhancedBitmap = enhanced, filterType = filter)
+                    val source = p.croppedBitmap ?: p.originalBitmap
+                    val enhanced = documentProcessor.applyFilter(source, filterType)
+                    p.copy(enhancedBitmap = enhanced, filterType = filterType)
                 }
             }
             _state.value = _state.value.copy(pages = updatedPages, isProcessing = false)
@@ -276,22 +289,18 @@ class ScannerViewModel @Inject constructor(
 
     private fun finishEdit() {
         _state.value = _state.value.copy(
-            editingPageIndex     = null,
-            editingFilter        = FilterType.ORIGINAL,
-            showApplyToAllPrompt = false,
-            editDone             = true
+            editingPageIndex = null, editingFilter = FilterType.ORIGINAL,
+            showApplyToAllPrompt = false, editDone = true
         )
     }
 
-    fun onEditNavigated() {
-        _state.value = _state.value.copy(editDone = false)
-    }
+    fun onEditNavigated() { _state.value = _state.value.copy(editDone = false) }
 
     fun onBatchFilterApply(filterType: FilterType) {
         _state.value = _state.value.copy(isProcessing = true)
         viewModelScope.launch {
             val updated = _state.value.pages.map { p ->
-                val source   = p.croppedBitmap ?: p.originalBitmap
+                val source = p.croppedBitmap ?: p.originalBitmap
                 val enhanced = documentProcessor.applyFilter(source, filterType)
                 p.copy(enhancedBitmap = enhanced, filterType = filterType)
             }
@@ -299,13 +308,8 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
-    fun onFileNameChanged(name: String) {
-        _state.value = _state.value.copy(fileName = name)
-    }
-
-    fun onReset() {
-        _state.value = ScannerState()
-    }
+    fun onFileNameChanged(name: String) { _state.value = _state.value.copy(fileName = name) }
+    fun onReset() { _state.value = ScannerState() }
 
     private fun updatePage(pageId: String, transform: (ScannedPage) -> ScannedPage) {
         _state.value = _state.value.copy(
@@ -323,16 +327,16 @@ class ScannerViewModel @Inject constructor(
 }
 
 data class ScannerState(
-    val pages: List<ScannedPage>        = emptyList(),
-    val isProcessing: Boolean           = false,
-    val editingPageIndex: Int?          = null,
-    val editingFilter: FilterType       = FilterType.ORIGINAL,
-    val showApplyToAllPrompt: Boolean   = false,
-    val editDone: Boolean               = false,
-    val fileName: String                = "DocScan_${System.currentTimeMillis()}",
-    val targetFolderId: String          = "",
-    val targetFolderName: String        = "",
+    val pages: List<ScannedPage> = emptyList(),
+    val isProcessing: Boolean = false,
+    val editingPageIndex: Int? = null,
+    val editingFilter: FilterType = FilterType.ORIGINAL,
+    val showApplyToAllPrompt: Boolean = false,
+    val editDone: Boolean = false,
+    val fileName: String = "DocScan_${System.currentTimeMillis()}",
+    val targetFolderId: String = "",
+    val targetFolderName: String = "",
     val targetExportType: FolderExportType = FolderExportType.PDF,
-    val isSaving: Boolean               = false,
-    val saveSuccess: Boolean            = false
+    val isSaving: Boolean = false,
+    val saveSuccess: Boolean = false
 )

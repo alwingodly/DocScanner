@@ -1,5 +1,9 @@
 package com.example.docscanner.navigation
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,11 +15,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -33,11 +42,22 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.example.docscanner.domain.model.Folder
+import com.example.docscanner.presentation.alldocuments.BgBase
+import com.example.docscanner.presentation.alldocuments.BgCard
+import com.example.docscanner.presentation.alldocuments.BgElevated
+import com.example.docscanner.presentation.alldocuments.BgSurface
+import com.example.docscanner.presentation.alldocuments.Coral
+import com.example.docscanner.presentation.alldocuments.CoralSoft
+import com.example.docscanner.presentation.alldocuments.GreenAccent
+import com.example.docscanner.presentation.alldocuments.Ink
+import com.example.docscanner.presentation.alldocuments.InkDim
+import com.example.docscanner.presentation.alldocuments.InkMid
+import com.example.docscanner.presentation.alldocuments.StrokeLight
+import com.example.docscanner.presentation.alldocuments.StrokeMid
 import com.example.docscanner.presentation.alldocuments.SidebarDragState
 import kotlin.math.roundToInt
 
 const val ALL_DOCUMENTS_ID = "__all__"
-
 enum class BottomTab { ALL_DOCS, PROFILE }
 
 @Composable
@@ -55,41 +75,27 @@ fun MainLayout(
 ) {
     val density = LocalDensity.current
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
+    Box(Modifier.fillMaxSize().background(BgBase)) {
         Column(Modifier.fillMaxSize()) {
 
-            Spacer(
-                Modifier
-                    .fillMaxWidth()
-                    .windowInsetsTopHeight(WindowInsets.statusBars)
-                    .background(MaterialTheme.colorScheme.primary)
-            )
+            // Status bar
+            Spacer(Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.statusBars).background(BgBase))
 
+            // App header
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.primary)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                Modifier.fillMaxWidth().background(BgBase).padding(horizontal = 16.dp, vertical = 11.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Default.DocumentScanner,
-                    contentDescription = null,
-                    tint     = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text       = "DocScanner",
-                    style      = MaterialTheme.typography.titleLarge,
-                    color      = MaterialTheme.colorScheme.onPrimary,
-                    fontWeight = FontWeight.Bold
-                )
+                Box(
+                    Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).background(Brush.linearGradient(listOf(Coral, Color(0xFFD94860)))),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.DocumentScanner, null, tint = Color.White, modifier = Modifier.size(17.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                Text("DocScanner", color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.2.sp)
             }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(StrokeLight))
 
             Row(Modifier.weight(1f).fillMaxWidth()) {
                 SidebarPanel(
@@ -102,137 +108,58 @@ fun MainLayout(
                     onDrop          = onDropToFolder,
                     onFolderReorder = onFolderReorder
                 )
-
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .width(1.dp)
-                        .background(MaterialTheme.colorScheme.outlineVariant)
-                )
-
-                Box(
-                    modifier = Modifier.weight(0.75f).fillMaxHeight(),
-                    content  = content
-                )
+                Box(Modifier.fillMaxHeight().width(1.dp).background(StrokeLight))
+                Box(Modifier.weight(0.75f).fillMaxHeight(), content = content)
             }
 
-            BottomNavBar(
-                selectedTab   = selectedTab,
-                onTabSelected = onTabSelected
-            )
+            Box(Modifier.fillMaxWidth().height(1.dp).background(StrokeLight))
+            BottomNavBar(selectedTab = selectedTab, onTabSelected = onTabSelected)
         }
 
-        // ── ROOT-LEVEL GHOST CARD ─────────────────────────────────────────────
-        // Rendered here so it floats above BOTH the sidebar and the content pane.
+        // ── Ghost drag card ──────────────────────────────────────────────────
         if (dragState.isDragging) {
-            val ghostWidthDp  = 90.dp
-            val ghostHeightDp = 120.dp
-            val ghostWidthPx  = with(density) { ghostWidthDp.toPx() }
-            val ghostHeightPx = with(density) { ghostHeightDp.toPx() }
+            val ghostW  = 90.dp
+            val ghostH  = 120.dp
+            val ghostWx = with(density) { ghostW.toPx() }
+            val ghostHx = with(density) { ghostH.toPx() }
+            val offsetX = (dragState.startX + dragState.dragOffsetX - ghostWx / 2f).roundToInt()
+            val offsetY = (dragState.startY + dragState.dragOffsetY - ghostHx / 2f).roundToInt()
 
-            // Centre the ghost under the finger
-            val offsetX = (dragState.startX + dragState.dragOffsetX - ghostWidthPx  / 2f).roundToInt()
-            val offsetY = (dragState.startY + dragState.dragOffsetY - ghostHeightPx / 2f).roundToInt()
-
-            Card(
-                modifier = Modifier
+            Box(
+                Modifier
                     .offset { IntOffset(offsetX, offsetY) }
-                    .size(ghostWidthDp, ghostHeightDp)
-                    .zIndex(999f)                          // above everything
-                    .graphicsLayer {
-                        scaleX          = 1.08f
-                        scaleY          = 1.08f
-                        shadowElevation = 32f
-                        alpha           = 0.95f
-                    }
-                    .border(
-                        2.dp,
-                        MaterialTheme.colorScheme.primary,
-                        RoundedCornerShape(12.dp)
-                    ),
-                shape     = RoundedCornerShape(12.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
+                    .size(ghostW, ghostH).zIndex(999f)
+                    .graphicsLayer { scaleX = 1.08f; scaleY = 1.08f; shadowElevation = 32f; alpha = 0.96f }
+                    .shadow(16.dp, RoundedCornerShape(14.dp), ambientColor = Color(0x22E8603C), spotColor = Color(0x22E8603C))
+                    .clip(RoundedCornerShape(14.dp)).border(1.5.dp, Coral.copy(0.6f), RoundedCornerShape(14.dp))
+                    .background(BgCard)
             ) {
-                Box(Modifier.fillMaxSize()) {
-                    if (dragState.draggingThumbnailPath != null) {
-                        AsyncImage(
-                            model              = dragState.draggingThumbnailPath,
-                            contentDescription = dragState.draggingDocumentName,
-                            contentScale       = ContentScale.Crop,
-                            modifier           = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surfaceVariant),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.Image,
-                                contentDescription = null,
-                                modifier = Modifier.size(28.dp),
-                                tint     = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                if (dragState.draggingThumbnailPath != null) {
+                    AsyncImage(model = dragState.draggingThumbnailPath, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                } else {
+                    Box(Modifier.fillMaxSize().background(BgSurface), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Image, null, Modifier.size(28.dp), tint = InkDim)
                     }
-
-                    // Name overlay
-                    Box(
-                        Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .background(Color.Black.copy(alpha = 0.6f))
-                            .padding(horizontal = 4.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            dragState.draggingDocumentName,
-                            style    = MaterialTheme.typography.labelSmall,
-                            color    = Color.White,
-                            maxLines = 1,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-
-                    // Page count badge
-                    Box(
-                        Modifier
-                            .align(Alignment.TopStart)
-                            .padding(4.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(Color.Black.copy(0.6f))
-                            .padding(horizontal = 5.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            "${dragState.draggingPageCount}p",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White
-                        )
-                    }
-
-                    // Drop hint badge
-                    Box(
-                        Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 4.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.9f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            "⬅ folder",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White
-                        )
-                    }
+                }
+                Box(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xEEFFFFFF))))
+                        .padding(horizontal = 5.dp, vertical = 5.dp)
+                ) {
+                    Text(dragState.draggingDocumentName, color = Ink, fontSize = 9.sp, fontWeight = FontWeight.Medium, maxLines = 1, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                }
+                Box(Modifier.align(Alignment.TopStart).padding(4.dp).clip(RoundedCornerShape(5.dp)).background(Ink.copy(0.78f)).padding(horizontal = 5.dp, vertical = 2.dp)) {
+                    Text("${dragState.draggingPageCount}p", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                }
+                Box(Modifier.align(Alignment.TopEnd).padding(4.dp).clip(RoundedCornerShape(5.dp)).background(Coral).padding(horizontal = 5.dp, vertical = 2.dp)) {
+                    Text("← folder", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
     }
 }
 
-// ── Sidebar ───────────────────────────────────────────────────────────────────
+// ── Sidebar ──────────────────────────────────────────────────────────────────
 
 @Composable
 private fun SidebarPanel(
@@ -242,7 +169,7 @@ private fun SidebarPanel(
     dragState       : SidebarDragState,
     onAllDocs       : () -> Unit,
     onFolder        : (Folder) -> Unit,
-    onDrop          : (documentId: String, folderId: String) -> Unit,
+    onDrop          : (String, String) -> Unit,
     onFolderReorder : (Int, Int) -> Unit
 ) {
     var reorderDragIndex by remember { mutableIntStateOf(-1) }
@@ -250,54 +177,38 @@ private fun SidebarPanel(
     val folderCentreY    = remember { mutableStateMapOf<String, Float>() }
 
     Column(
-        modifier
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .onGloballyPositioned { coords ->
-                val bounds = coords.boundsInWindow()
-                dragState.sidebarRightEdge = bounds.right
-            }
+        modifier.background(BgSurface)
+            .onGloballyPositioned { coords -> dragState.sidebarRightEdge = coords.boundsInWindow().right }
     ) {
         Column(
-            Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(vertical = 4.dp)
+            Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 6.dp)
         ) {
             Box(
-                Modifier
-                    .fillMaxWidth()
-                    .onGloballyPositioned { coords ->
-                        val bounds = coords.boundsInWindow()
-                        dragState.updateFolderBounds(ALL_DOCUMENTS_ID, bounds.top, bounds.bottom)
-                    }
+                Modifier.fillMaxWidth()
+                    .onGloballyPositioned { coords -> val b = coords.boundsInWindow(); dragState.updateFolderBounds(ALL_DOCUMENTS_ID, b.top, b.bottom) }
             ) {
-                val isAllHovered = dragState.isDragging &&
-                        dragState.hoveredFolderId == ALL_DOCUMENTS_ID
                 SidebarItem(
                     icon         = Icons.Default.Description,
                     label        = "All",
                     selected     = selectedId == ALL_DOCUMENTS_ID,
-                    isDropTarget = isAllHovered,
+                    isDropTarget = dragState.isDragging && dragState.hoveredFolderId == ALL_DOCUMENTS_ID,
                     onClick      = onAllDocs
                 )
             }
 
-            Spacer(Modifier.height(2.dp))
-            HorizontalDivider(Modifier.padding(horizontal = 6.dp), thickness = 0.5.dp)
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(4.dp))
+            HorizontalDivider(Modifier.padding(horizontal = 8.dp), thickness = 0.5.dp, color = StrokeLight)
+            Spacer(Modifier.height(4.dp))
 
             Text(
-                "FOLDERS",
-                style     = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
-                color     = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                modifier  = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
-                textAlign = TextAlign.Center
+                "FOLDERS", color = InkDim, fontSize = 7.5.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp), textAlign = TextAlign.Center
             )
+            Spacer(Modifier.height(4.dp))
 
             if (folders.isEmpty()) {
-                Box(Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Box(Modifier.fillMaxWidth().padding(vertical = 20.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(16.dp), color = Coral, strokeWidth = 2.dp)
                 }
             } else {
                 folders.forEachIndexed { index, folder ->
@@ -305,42 +216,24 @@ private fun SidebarPanel(
                     val isDocDropHovered = dragState.isDragging && dragState.hoveredFolderId == folder.id
 
                     Box(
-                        Modifier
-                            .fillMaxWidth()
+                        Modifier.fillMaxWidth()
                             .then(if (isBeingReordered) Modifier.zIndex(10f) else Modifier)
-                            .graphicsLayer {
-                                if (isBeingReordered) {
-                                    translationY    = reorderDragDy
-                                    shadowElevation = 16f
-                                    alpha           = 0.93f
-                                }
-                            }
+                            .graphicsLayer { if (isBeingReordered) { translationY = reorderDragDy; shadowElevation = 16f; alpha = 0.95f } }
                             .onGloballyPositioned { coords ->
-                                val bounds = coords.boundsInWindow()
-                                // Register bounds for document-drag hit testing
-                                dragState.updateFolderBounds(folder.id, bounds.top, bounds.bottom)
-                                folderCentreY[folder.id] = (bounds.top + bounds.bottom) / 2f
+                                val b = coords.boundsInWindow()
+                                dragState.updateFolderBounds(folder.id, b.top, b.bottom)
+                                folderCentreY[folder.id] = (b.top + b.bottom) / 2f
                             }
                             .pointerInput(index) {
                                 detectDragGesturesAfterLongPress(
-                                    onDragStart = {
-                                        if (!dragState.isDragging) {
-                                            reorderDragIndex = index; reorderDragDy = 0f
-                                        }
-                                    },
-                                    onDrag = { change, amount ->
-                                        change.consume()
-                                        if (reorderDragIndex >= 0) reorderDragDy += amount.y
-                                    },
-                                    onDragEnd = {
+                                    onDragStart  = { if (!dragState.isDragging) { reorderDragIndex = index; reorderDragDy = 0f } },
+                                    onDrag       = { change, amount -> change.consume(); if (reorderDragIndex >= 0) reorderDragDy += amount.y },
+                                    onDragEnd    = {
                                         if (reorderDragIndex >= 0) {
                                             val draggedId     = folders[reorderDragIndex].id
                                             val draggedCentre = (folderCentreY[draggedId] ?: 0f) + reorderDragDy
-                                            val targetIndex   = folders.indexOfMinBy { f ->
-                                                kotlin.math.abs((folderCentreY[f.id] ?: 0f) - draggedCentre)
-                                            }
-                                            if (targetIndex >= 0 && targetIndex != reorderDragIndex)
-                                                onFolderReorder(reorderDragIndex, targetIndex)
+                                            val targetIndex   = folders.indexOfMinBy { f -> kotlin.math.abs((folderCentreY[f.id] ?: 0f) - draggedCentre) }
+                                            if (targetIndex >= 0 && targetIndex != reorderDragIndex) onFolderReorder(reorderDragIndex, targetIndex)
                                             reorderDragIndex = -1; reorderDragDy = 0f
                                         }
                                     },
@@ -351,29 +244,16 @@ private fun SidebarPanel(
                         SidebarFolderItem(
                             folder       = folder,
                             selected     = selectedId == folder.id,
-                            isDragging   = dragState.isDragging,
                             isHovered    = isDocDropHovered,
                             isReordering = isBeingReordered,
                             onClick      = {
                                 if (dragState.isDragging && isDocDropHovered) {
                                     val docId = dragState.draggingDocumentId
                                     if (docId != null) onDrop(docId, folder.id)
-                                } else {
-                                    onFolder(folder)
-                                }
+                                } else onFolder(folder)
                             }
                         )
                     }
-                }
-
-                if (reorderDragIndex < 0) {
-                    Text(
-                        "Hold to reorder",
-                        style     = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
-                        color     = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                        textAlign = TextAlign.Center,
-                        modifier  = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 2.dp)
-                    )
                 }
             }
         }
@@ -387,241 +267,124 @@ private fun <T> List<T>.indexOfMinBy(selector: (T) -> Float): Int {
     return minIdx
 }
 
-// ── Sidebar item: All Documents ───────────────────────────────────────────────
+// ── Sidebar item — All docs ──────────────────────────────────────────────────
 
 @Composable
-private fun SidebarItem(
-    label       : String,
-    selected    : Boolean,
-    isDropTarget: Boolean,
-    onClick     : () -> Unit,
-    icon        : ImageVector? = null
-) {
-    val bg = when {
-        isDropTarget -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.22f)
-        selected     -> MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-        else         -> Color.Transparent
-    }
+private fun SidebarItem(label: String, selected: Boolean, isDropTarget: Boolean, onClick: () -> Unit, icon: ImageVector? = null) {
+    val bg   by animateColorAsState(when { isDropTarget -> GreenAccent.copy(0.12f); selected -> Coral.copy(0.10f); else -> Color.Transparent }, tween(200), label = "bg")
+    val bd   by animateColorAsState(when { isDropTarget -> GreenAccent.copy(0.40f); selected -> Coral.copy(0.30f); else -> Color.Transparent }, tween(200), label = "bd")
+    val tint by animateColorAsState(when { isDropTarget -> GreenAccent; selected -> Coral; else -> InkMid }, tween(200), label = "t")
+
     Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(bg)
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 5.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(9.dp)).background(bg).border(1.dp, bd, RoundedCornerShape(9.dp))
+            .clickable(onClick = onClick).padding(vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        if (icon != null) Icon(
-            icon, label, Modifier.size(20.dp),
-            tint = if (selected) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (icon != null) Icon(icon, label, Modifier.size(24.dp), tint = tint)
         Spacer(Modifier.height(3.dp))
-        Text(
-            label,
-            style      = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-            color      = if (selected) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            textAlign  = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis
-        )
+        Text(label, color = tint, fontSize = 10.sp, fontWeight = if (selected || isDropTarget) FontWeight.Bold else FontWeight.Normal, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
-// ── Sidebar folder item ───────────────────────────────────────────────────────
+// ── Sidebar folder item ──────────────────────────────────────────────────────
+//
+// FIX: Badge is intentionally tiny — defaultMinSize(10.dp, 10.dp) with 6.sp text.
+// Folder icon is 22.dp. Badge sits at offset (+2.dp, -2.dp) from folder icon's top-right.
+// This ensures badge is visually much smaller than the folder icon it annotates.
 
 @Composable
-private fun SidebarFolderItem(
-    folder      : Folder,
-    selected    : Boolean,
-    isDragging  : Boolean,
-    isHovered   : Boolean,
-    isReordering: Boolean,
-    onClick     : () -> Unit
-) {
-    val bg = when {
-        isHovered    -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.28f)
-        isReordering -> MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-        selected     -> MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-        else         -> Color.Transparent
-    }
-    val iconTint = when {
-        isHovered    -> MaterialTheme.colorScheme.tertiary
-        isReordering -> MaterialTheme.colorScheme.primary
-        selected     -> MaterialTheme.colorScheme.primary
-        else         -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
+private fun SidebarFolderItem(folder: Folder, selected: Boolean, isHovered: Boolean, isReordering: Boolean, onClick: () -> Unit) {
+    val bg    by animateColorAsState(when { isHovered -> GreenAccent.copy(0.12f); isReordering -> Coral.copy(0.08f); selected -> Coral.copy(0.10f); else -> Color.Transparent }, tween(200), label = "bg")
+    val bd    by animateColorAsState(when { isHovered -> GreenAccent.copy(0.40f); isReordering -> Coral.copy(0.25f); selected -> Coral.copy(0.30f); else -> Color.Transparent }, tween(200), label = "bd")
+    val tint  by animateColorAsState(when { isHovered -> GreenAccent; isReordering -> Coral; selected -> Coral; else -> InkMid }, tween(200), label = "t")
+    val scale by animateFloatAsState(if (isHovered) 1.06f else 1f, spring(stiffness = 500f), label = "sc")
 
     Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(bg)
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 5.dp, vertical = 2.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(RoundedCornerShape(9.dp)).background(bg).border(1.dp, bd, RoundedCornerShape(9.dp))
+            .clickable(onClick = onClick).padding(vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // ── Folder icon with notification badge ───────────────────────────────
+        // Folder icon + tiny badge overlay
+        // The outer Box is only as big as the icon itself, keeping the badge tightly anchored
         Box(contentAlignment = Alignment.TopEnd) {
-            // Slightly larger box when hovered so the glow background fits
-            if (isHovered) {
-                Box(
-                    Modifier
-                        .size(34.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.25f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.Folder,
-                        contentDescription = folder.name,
-                        modifier = Modifier.size(20.dp),
-                        tint     = iconTint
-                    )
-                }
-            } else {
-                Icon(
-                    Icons.Default.Folder,
-                    contentDescription = folder.name,
-                    modifier = Modifier
-                        .size(28.dp)
-                        .padding(end = 4.dp, top = 4.dp), // leave room for badge
-                    tint = iconTint
-                )
-            }
+            // Folder icon: 22dp
+            Icon(Icons.Default.Folder, folder.name, Modifier.size(28.dp).padding(end = 4.dp, top = 4.dp), tint = tint)
 
-            // Notification badge — only when there are documents and not hovering
-            if (folder.documentCount > 0 && !isHovered) {
-                Box(
-                    Modifier
-                        .offset(x = 2.dp, y = (-2).dp)
-                        .defaultMinSize(minWidth = 14.dp, minHeight = 14.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (selected) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.error
+            // Overlay: either a drop-arrow (when dragging) or doc-count badge (when non-zero)
+            when {
+                isHovered -> {
+                    // Drop indicator — small green pill
+                    Box(
+                        Modifier.offset(x = 2.dp, y = (-2).dp)
+                            .clip(RoundedCornerShape(3.dp)).background(GreenAccent)
+                            .padding(horizontal = 2.dp, vertical = 1.dp)
+                    ) {
+                        Text("↓", color = Color.White, fontSize = 6.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                folder.documentCount > 0 -> {
+                    // Count badge: deliberately small (10dp min) so it's never bigger than the 22dp icon
+                    Box(
+                        Modifier.offset(x = 2.dp, y = (-2).dp)
+                            .defaultMinSize(minWidth = 14.dp, minHeight = 14.dp)
+                            .clip(CircleShape)
+                            .background(if (selected) Coral else StrokeMid)
+                            .padding(horizontal = 2.dp, vertical = 1.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (folder.documentCount > 99) "99+" else "${folder.documentCount}",
+                            color      = if (selected) Color.White else InkMid,
+                            fontSize   = 6.sp,
+                            fontWeight = FontWeight.Bold,
+                            lineHeight = 7.sp
                         )
-                        .padding(horizontal = 3.dp, vertical = 1.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text  = if (folder.documentCount > 99) "99+" else "${folder.documentCount}",
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 7.sp),
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            // "Drop here" badge replaces the count badge when hovered
-            if (isHovered) {
-                Box(
-                    Modifier
-                        .offset(x = 2.dp, y = (-2).dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(MaterialTheme.colorScheme.tertiary)
-                        .padding(horizontal = 3.dp, vertical = 1.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "↓",
-                        style      = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
-                        color      = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
+                    }
                 }
             }
         }
 
         Spacer(Modifier.height(4.dp))
-
         Text(
-            folder.name,
-            style      = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-            color      = iconTint,
-            fontWeight = if (selected || isHovered || isReordering) FontWeight.SemiBold
-            else FontWeight.Normal,
-            textAlign  = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis
+            folder.name, color = tint, fontSize = 9.sp,
+            fontWeight = if (selected || isHovered || isReordering) FontWeight.Bold else FontWeight.Normal,
+            textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis
         )
-
-        if (isReordering) {
-            Spacer(Modifier.height(2.dp))
-            Text(
-                "Moving…",
-                style      = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
-                color      = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        if (isHovered) {
-            Spacer(Modifier.height(2.dp))
-            Text(
-                "Drop here",
-                style      = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
-                color      = MaterialTheme.colorScheme.tertiary,
-                fontWeight = FontWeight.Bold
-            )
-        }
+//        if (isHovered)    { Spacer(Modifier.height(2.dp)); Text("Drop here",  color = GreenAccent, fontSize = 7.5.sp, fontWeight = FontWeight.Bold) }
+//        if (isReordering) { Spacer(Modifier.height(2.dp)); Text("Moving…",    color = Coral,       fontSize = 7.5.sp, fontWeight = FontWeight.Bold) }
     }
 }
 
-// ── Bottom bar — clean 2-tab nav, no camera bulge ────────────────────────────
+// ── Bottom nav bar ────────────────────────────────────────────────────────────
 
 @Composable
-fun BottomNavBar(
-    selectedTab  : BottomTab,
-    onTabSelected: (BottomTab) -> Unit
-) {
-    Surface(
-        modifier        = Modifier.fillMaxWidth(),
-        tonalElevation  = 4.dp,
-        shadowElevation = 8.dp,
-        color           = MaterialTheme.colorScheme.surface
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                .height(64.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TabItem(
-                modifier  = Modifier.weight(1f),
-                icon      = Icons.Default.Description,
-                label     = "Home",
-                selected  = selectedTab == BottomTab.ALL_DOCS,
-                onClick   = { onTabSelected(BottomTab.ALL_DOCS) }
-            )
-            TabItem(
-                modifier  = Modifier.weight(1f),
-                icon      = Icons.Default.Person,
-                label     = "Profile",
-                selected  = selectedTab == BottomTab.PROFILE,
-                onClick   = { onTabSelected(BottomTab.PROFILE) }
-            )
+fun BottomNavBar(selectedTab: BottomTab, onTabSelected: (BottomTab) -> Unit) {
+    Box(Modifier.fillMaxWidth().background(BgBase).windowInsetsPadding(WindowInsets.navigationBars).height(60.dp)) {
+        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+            BottomTabItem(Modifier.weight(1f), Icons.Default.Description, "Home",    selectedTab == BottomTab.ALL_DOCS)   { onTabSelected(BottomTab.ALL_DOCS) }
+            BottomTabItem(Modifier.weight(1f), Icons.Default.Person,      "Profile", selectedTab == BottomTab.PROFILE)    { onTabSelected(BottomTab.PROFILE) }
         }
     }
 }
 
 @Composable
-private fun RowScope.TabItem(
-    modifier: Modifier, icon: ImageVector, label: String,
-    selected: Boolean, onClick: () -> Unit
-) {
+private fun BottomTabItem(modifier: Modifier, icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
+    val tint  by animateColorAsState(if (selected) Coral else InkMid, tween(200), label = "t")
+    val indA  by animateFloatAsState(if (selected) 1f else 0f, tween(250), label = "ind")
+    val scale by animateFloatAsState(if (selected) 1.05f else 1f, spring(stiffness = 600f), label = "sc")
+
     Column(
-        modifier.fillMaxHeight().clickable(onClick = onClick),
+        modifier.fillMaxHeight().clickable(onClick = onClick).graphicsLayer { scaleX = scale; scaleY = scale },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(icon, label, Modifier.size(22.dp),
-            tint = if (selected) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(Modifier.width(28.dp).height(2.5.dp).clip(RoundedCornerShape(2.dp)).background(Coral.copy(alpha = indA)))
+        Spacer(Modifier.height(5.dp))
+        Icon(icon, label, Modifier.size(21.dp), tint = tint)
         Spacer(Modifier.height(2.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall,
-            color = if (selected) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(label, color = tint, fontSize = 10.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
     }
 }

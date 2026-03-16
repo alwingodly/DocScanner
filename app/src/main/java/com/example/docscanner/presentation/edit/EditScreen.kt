@@ -1,13 +1,16 @@
 package com.example.docscanner.presentation.edit
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.PointF
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,7 +21,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -28,7 +30,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -37,35 +42,45 @@ import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastForEach
-import com.example.docscanner.data.ocr.MlKitOcrHelper
 import com.example.docscanner.domain.model.DocumentCorners
 import com.example.docscanner.domain.model.FilterType
 import com.example.docscanner.domain.model.ScannedPage
-import kotlinx.coroutines.launch
+import com.example.docscanner.presentation.alldocuments.BgBase
+import com.example.docscanner.presentation.alldocuments.BgCard
+import com.example.docscanner.presentation.alldocuments.BgSurface
+import com.example.docscanner.presentation.alldocuments.Coral
+import com.example.docscanner.presentation.alldocuments.GreenAccent
+import com.example.docscanner.presentation.alldocuments.Ink
+import com.example.docscanner.presentation.alldocuments.InkDim
+import com.example.docscanner.presentation.alldocuments.InkMid
+import com.example.docscanner.presentation.alldocuments.StrokeLight
+import com.example.docscanner.presentation.alldocuments.StrokeMid
 import kotlin.math.sqrt
 
+// ─── Shared extra tokens for edit screen ─────────────────────────────────────
+private val BgPreview = Color(0xFFF0EDE8)   // warm grey canvas for image preview
+private val CropBlue  = Coral               // reuse coral as the crop handle accent
+
 // ──────────────────────────────────────────────────────────────
-// Corner normalisation (centroid-based)
+// Corner normalisation (unchanged logic)
 // ──────────────────────────────────────────────────────────────
 
 private fun normalizeCorners(c: DocumentCorners): DocumentCorners {
     val pts = listOf(c.topLeft, c.topRight, c.bottomLeft, c.bottomRight)
-    val cx = pts.map { it.x }.average().toFloat()
-    val cy = pts.map { it.y }.average().toFloat()
-
-    val tl = pts.filter { it.x < cx && it.y < cy }
-    val tr = pts.filter { it.x >= cx && it.y < cy }
-    val bl = pts.filter { it.x < cx && it.y >= cy }
-    val br = pts.filter { it.x >= cx && it.y >= cy }
-
+    val cx  = pts.map { it.x }.average().toFloat()
+    val cy  = pts.map { it.y }.average().toFloat()
+    val tl  = pts.filter { it.x < cx && it.y < cy }
+    val tr  = pts.filter { it.x >= cx && it.y < cy }
+    val bl  = pts.filter { it.x < cx && it.y >= cy }
+    val br  = pts.filter { it.x >= cx && it.y >= cy }
     if (listOf(tl, tr, bl, br).all { it.size == 1 })
         return DocumentCorners(tl.first(), tr.first(), bl.first(), br.first())
-
     val sorted = pts.sortedBy { pt ->
-        val angle = kotlin.math.atan2((pt.y - cy).toDouble(), (pt.x - cx).toDouble())
+        val angle   = kotlin.math.atan2((pt.y - cy).toDouble(), (pt.x - cx).toDouble())
         val shifted = angle - kotlin.math.PI / 4
         if (shifted < 0) shifted + 2 * kotlin.math.PI else shifted
     }
@@ -73,104 +88,38 @@ private fun normalizeCorners(c: DocumentCorners): DocumentCorners {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Live colour-matrix helper  (brightness + contrast in Canvas)
+// Live colour-matrix helper (unchanged logic)
 // ──────────────────────────────────────────────────────────────
 
-/**
- * Builds an Android [Paint] whose [ColorMatrixColorFilter] encodes
- * brightness (-100..100), contrast (0.5..2.0), and the chosen [FilterType].
- *
- * This runs on the UI thread inside Canvas – kept allocation-light.
- *
- * Filter mappings (matching your OpenCV pipeline so the preview matches
- * the final processed result as closely as possible):
- *
- *   ORIGINAL   → just brightness + contrast, full colour
- *   ENHANCED   → brightness/contrast + saturation boost + mild sharpen sim
- *   GRAYSCALE  → desaturate (setSaturation(0))
- *   BLACK_WHITE → desaturate + very high contrast (Otsu-style simulation)
- *   MAGIC      → desaturate + adaptive-threshold look (high local contrast)
- */
-private fun buildLivePaint(
-    brightness: Double,
-    contrast: Double,
-    filterType: FilterType
-): Paint {
+private fun buildLivePaint(brightness: Double, contrast: Double, filterType: FilterType): Paint {
     val c         = contrast.toFloat()
-    val b         = brightness.toFloat() * 2.55f   // map -100..100 → -255..255
-    val translate = 128f * (1f - c) + b            // anchor mid-grey
-
-    // ── Base brightness + contrast ──
-    val cm = ColorMatrix(floatArrayOf(
+    val b         = brightness.toFloat() * 2.55f
+    val translate = 128f * (1f - c) + b
+    val cm        = ColorMatrix(floatArrayOf(
         c,  0f, 0f, 0f, translate,
         0f, c,  0f, 0f, translate,
         0f, 0f, c,  0f, translate,
         0f, 0f, 0f, 1f, 0f
     ))
-
-    // ── Filter-specific layer (postConcat so brightness/contrast still applies) ──
     when (filterType) {
-
-        FilterType.ORIGINAL -> { /* no extra transform */ }
-
-        FilterType.ENHANCED -> {
-            // Slight saturation boost (1.3×) + warm lift on highlights
-            val sat = ColorMatrix()
-            sat.setSaturation(1.3f)
-            val warm = ColorMatrix(floatArrayOf(
-                1.05f, 0f,    0f,    0f,  8f,
-                0f,    1.0f,  0f,    0f,  2f,
-                0f,    0f,    0.95f, 0f, -4f,
-                0f,    0f,    0f,    1f,  0f
-            ))
-            cm.postConcat(sat)
-            cm.postConcat(warm)
+        FilterType.ORIGINAL  -> { }
+        FilterType.ENHANCED  -> {
+            val sat  = ColorMatrix().also { it.setSaturation(1.3f) }
+            val warm = ColorMatrix(floatArrayOf(1.05f, 0f, 0f, 0f, 8f, 0f, 1.0f, 0f, 0f, 2f, 0f, 0f, 0.95f, 0f, -4f, 0f, 0f, 0f, 1f, 0f))
+            cm.postConcat(sat); cm.postConcat(warm)
         }
-
-        FilterType.GRAYSCALE -> {
-            val gray = ColorMatrix()
-            gray.setSaturation(0f)
-            cm.postConcat(gray)
-        }
-
+        FilterType.GRAYSCALE  -> cm.postConcat(ColorMatrix().also { it.setSaturation(0f) })
         FilterType.BLACK_WHITE -> {
-            // Desaturate + crush blacks and blow out whites (Otsu feel)
-            val gray = ColorMatrix()
-            gray.setSaturation(0f)
-            cm.postConcat(gray)
-            val bw = ColorMatrix(floatArrayOf(
-                2.5f, 0f,   0f,   0f, -160f,
-                0f,   2.5f, 0f,   0f, -160f,
-                0f,   0f,   2.5f, 0f, -160f,
-                0f,   0f,   0f,   1f,   0f
-            ))
-            cm.postConcat(bw)
+            cm.postConcat(ColorMatrix().also { it.setSaturation(0f) })
+            cm.postConcat(ColorMatrix(floatArrayOf(2.5f, 0f, 0f, 0f, -160f, 0f, 2.5f, 0f, 0f, -160f, 0f, 0f, 2.5f, 0f, -160f, 0f, 0f, 0f, 1f, 0f)))
         }
-
         FilterType.MAGIC -> {
-            // Desaturate + adaptive-threshold approximation:
-            // high local contrast, slightly lifted shadows
-            val gray = ColorMatrix()
-            gray.setSaturation(0f)
-            cm.postConcat(gray)
-            val adaptive = ColorMatrix(floatArrayOf(
-                3.0f, 0f,   0f,   0f, -200f,
-                0f,   3.0f, 0f,   0f, -200f,
-                0f,   0f,   3.0f, 0f, -200f,
-                0f,   0f,   0f,   1f,   0f
-            ))
-            cm.postConcat(adaptive)
+            cm.postConcat(ColorMatrix().also { it.setSaturation(0f) })
+            cm.postConcat(ColorMatrix(floatArrayOf(3.0f, 0f, 0f, 0f, -200f, 0f, 3.0f, 0f, 0f, -200f, 0f, 0f, 3.0f, 0f, -200f, 0f, 0f, 0f, 1f, 0f)))
         }
     }
-
     return Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
 }
-
-// ──────────────────────────────────────────────────────────────
-// OCR state
-// ──────────────────────────────────────────────────────────────
-
-private enum class OcrState { IDLE, LOADING, SUCCESS, ERROR }
 
 // ══════════════════════════════════════════════════════════════
 // EDIT SCREEN
@@ -179,313 +128,190 @@ private enum class OcrState { IDLE, LOADING, SUCCESS, ERROR }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditScreen(
-    page: ScannedPage?,
-    currentFilter: FilterType,
-    isProcessing: Boolean,
-    showApplyToAllPrompt: Boolean,
-    totalPages: Int,
-    onFilterSelected: (FilterType) -> Unit,
-    /** Called ONLY when slider interaction ends – triggers ViewModel processing */
+    page                       : ScannedPage?,
+    currentFilter              : FilterType,
+    isProcessing               : Boolean,
+    showApplyToAllPrompt       : Boolean,
+    totalPages                 : Int,
+    onFilterSelected           : (FilterType) -> Unit,
     onBrightnessContrastChanged: (Double, Double) -> Unit,
-    onCornersChanged: (DocumentCorners) -> Unit,
-    onDone: () -> Unit,
-    onApplyToAll: () -> Unit,
-    onDismissApplyToAll: () -> Unit
+    onCornersChanged           : (DocumentCorners) -> Unit,
+    onDone                     : () -> Unit,
+    onApplyToAll               : () -> Unit,
+    onDismissApplyToAll        : () -> Unit
 ) {
     if (page == null) return
 
-    val context   = LocalContext.current
-    val scope     = rememberCoroutineScope()
-    val ocrHelper = remember { MlKitOcrHelper(context) }
-
     var selectedTab by remember { mutableIntStateOf(0) }
+    var brightness  by remember { mutableDoubleStateOf(0.0) }
+    var contrast    by remember { mutableDoubleStateOf(1.0) }
 
-    // Live slider state – drives the Canvas paint in real time
-    var brightness by remember { mutableDoubleStateOf(0.0) }
-    var contrast   by remember { mutableDoubleStateOf(1.0) }
-
-    // OCR
-    var ocrState     by remember { mutableStateOf(OcrState.IDLE) }
-    var ocrText      by remember { mutableStateOf("") }
-    var ocrError     by remember { mutableStateOf("") }
-    var showOcrSheet by remember { mutableStateOf(false) }
-
+    // ── Apply-to-all dialog ───────────────────────────────────────────────────
     if (showApplyToAllPrompt) {
         AlertDialog(
             onDismissRequest = onDismissApplyToAll,
-            title   = { Text("Apply to all pages?") },
-            text    = { Text("Apply \"${currentFilter.displayName}\" to all $totalPages pages?") },
-            confirmButton = { Button(onClick = onApplyToAll)               { Text("Apply to all") } },
-            dismissButton = { TextButton(onClick = onDismissApplyToAll)    { Text("This page only") } }
-        )
-    }
-
-    if (showOcrSheet) {
-        OcrBottomSheet(
-            state     = ocrState,
-            text      = ocrText,
-            error     = ocrError,
-            onDismiss = { showOcrSheet = false },
-            onCopy    = {
-                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("Extracted Text", ocrText))
-            }
-        )
-    }
-
-    Column(Modifier.fillMaxSize().background(Color(0xFF0D0D0D))) {
-
-        // ── Top bar ──────────────────────────────────────────
-        TopAppBar(
-            title = {
-                Text(
-                    if (selectedTab == 0) "Crop" else "Enhance",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White
-                )
-            },
-            navigationIcon = {
-                IconButton(onClick = onDone, enabled = !isProcessing) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White)
-                }
-            },
-            actions = {
-                IconButton(onClick = onDone, enabled = !isProcessing) {
-                    Icon(Icons.Default.Check, "Done", tint = Color(0xFF4CAF50))
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor    = Color(0xFF0D0D0D),
-                titleContentColor = Color.White
-            )
-        )
-
-        // ── Tab selector (minimal pill style) ────────────────
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
-                .background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp))
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            listOf("Crop", "Enhance").forEachIndexed { i, label ->
-                val sel = selectedTab == i
+            containerColor   = BgCard,
+            shape            = RoundedCornerShape(18.dp),
+            title   = { Text("Apply to all pages?", color = Ink, fontWeight = FontWeight.Bold) },
+            text    = { Text("Apply \"${currentFilter.displayName}\" to all $totalPages pages?", color = InkMid, fontSize = 14.sp) },
+            confirmButton = {
                 Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (sel) Color(0xFF2C2C2C) else Color.Transparent)
-                        .clickable { selectedTab = i }
-                        .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (sel) Color.White else Color.White.copy(alpha = 0.45f)
-                    )
-                }
+                    Modifier.clip(RoundedCornerShape(10.dp))
+                        .background(Brush.horizontalGradient(listOf(Coral, Color(0xFFD94860))))
+                        .clickable(onClick = onApplyToAll).padding(horizontal = 16.dp, vertical = 9.dp)
+                ) { Text("Apply to all", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp) }
+            },
+            dismissButton = {
+                Box(
+                    Modifier.clip(RoundedCornerShape(10.dp)).background(BgSurface)
+                        .border(1.dp, StrokeLight, RoundedCornerShape(10.dp))
+                        .clickable(onClick = onDismissApplyToAll).padding(horizontal = 16.dp, vertical = 9.dp)
+                ) { Text("This page only", color = InkMid, fontSize = 14.sp) }
             }
-        }
-
-        // ── Tab content ──────────────────────────────────────
-        when (selectedTab) {
-            0 -> CropTab(
-                // Always pass the ORIGINAL (pre-crop) bitmap so the user
-                // adjusts handles over the untransformed image
-                bitmap           = page.originalBitmap,
-                corners          = page.corners,
-                isProcessing     = isProcessing,
-                onCornersChanged = onCornersChanged,
-                modifier         = Modifier.weight(1f)
-            )
-            1 -> EnhanceTab(
-                // Also show the original here; live ColorMatrix preview makes
-                // it feel responsive without expensive ViewModel processing
-                bitmap              = page.originalBitmap,
-                currentFilter       = currentFilter,
-                isProcessing        = isProcessing,
-                brightness          = brightness,
-                contrast            = contrast,
-                onFilterSelected    = onFilterSelected,
-                onBrightnessChanged = { brightness = it },   // instant repaint
-                onContrastChanged   = { contrast   = it },   // instant repaint
-                onSliderFinished    = { onBrightnessContrastChanged(brightness, contrast) },
-                modifier            = Modifier.weight(1f)
-            )
-        }
-
-        // ── Bottom action row ─────────────────────────────────
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF0D0D0D))
-                .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            OutlinedButton(
-                onClick = {
-                    showOcrSheet = true
-                    ocrState = OcrState.LOADING
-                    ocrText  = ""
-                    ocrError = ""
-                    scope.launch {
-                        ocrHelper.extractText(page.displayBitmap)
-                            .onSuccess { t ->
-                                ocrText  = t.ifBlank { "No text detected." }
-                                ocrState = OcrState.SUCCESS
-                            }
-                            .onFailure { e ->
-                                ocrError = e.message ?: "Unknown error"
-                                ocrState = OcrState.ERROR
-                            }
-                    }
-                },
-                enabled  = !isProcessing,
-                modifier = Modifier.weight(1f),
-                colors   = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                border   = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF333333))
-            ) {
-                Icon(Icons.Default.TextFields, null, Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Extract Text", style = MaterialTheme.typography.labelLarge)
-            }
-
-            Button(
-                onClick  = onDone,
-                enabled  = !isProcessing,
-                modifier = Modifier.weight(1f),
-                colors   = ButtonDefaults.buttonColors(containerColor = Color(0xFF2979FF))
-            ) {
-                if (isProcessing) {
-                    CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Processing…")
-                } else {
-                    Text("Done", style = MaterialTheme.typography.labelLarge)
-                }
-            }
-        }
+        )
     }
-}
 
-// ══════════════════════════════════════════════════════════════
-// OCR BOTTOM SHEET
-// ══════════════════════════════════════════════════════════════
+    Box(Modifier.fillMaxSize().background(BgBase)) {
+        Column(Modifier.fillMaxSize()) {
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun OcrBottomSheet(
-    state: OcrState,
-    text: String,
-    error: String,
-    onDismiss: () -> Unit,
-    onCopy: () -> Unit
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var copied by remember { mutableStateOf(false) }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState       = sheetState,
-        containerColor   = Color(0xFF161616),
-        dragHandle       = { BottomSheetDefaults.DragHandle(color = Color(0xFF3A3A3A)) }
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 36.dp)
-        ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
+            // ── Top bar ───────────────────────────────────────────────────────
+            Surface(
+                modifier        = Modifier.fillMaxWidth(),
+                color           = BgBase,
+                shadowElevation = 0.dp,
+                tonalElevation  = 0.dp
             ) {
-                Text("Extracted Text",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White)
-                if (state == OcrState.SUCCESS && text.isNotBlank()) {
-                    TextButton(onClick = { onCopy(); copied = true }) {
-                        Icon(
-                            if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                            null, Modifier.size(16.dp),
-                            tint = if (copied) Color(0xFF4CAF50) else Color(0xFF2979FF)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            if (copied) "Copied" else "Copy",
-                            color = if (copied) Color(0xFF4CAF50) else Color(0xFF2979FF),
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(14.dp))
-
-            when (state) {
-                OcrState.LOADING -> Box(
-                    Modifier.fillMaxWidth().height(140.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = Color(0xFF2979FF))
-                        Spacer(Modifier.height(10.dp))
-                        Text("Reading text…",
-                            color = Color.White.copy(0.5f),
-                            style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                OcrState.ERROR -> Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xFF2A1A1A))
-                        .padding(14.dp)
-                ) {
-                    Text("Error: $error",
-                        color = Color(0xFFEF5350),
-                        style = MaterialTheme.typography.bodyMedium)
-                }
-
-                OcrState.SUCCESS -> {
-                    val scroll = rememberScrollState()
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 80.dp, max = 340.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF1E1E1E))
-                            .padding(14.dp)
+                Box(Modifier.fillMaxWidth().statusBarsPadding()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(text,
-                            color    = Color.White,
-                            style    = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.fillMaxWidth().verticalScroll(scroll))
+                        IconButton(onClick = onDone, enabled = !isProcessing) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Ink)
+                        }
+                        Text(
+                            if (selectedTab == 0) "Crop" else "Enhance",
+                            color      = Ink,
+                            fontWeight = FontWeight.Bold,
+                            fontSize   = 16.sp,
+                            modifier   = Modifier.weight(1f)
+                        )
+                        // Done checkmark button
+                        Box(
+                            Modifier.padding(end = 10.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (!isProcessing) GreenAccent.copy(0.12f) else BgSurface)
+                                .border(1.dp, if (!isProcessing) GreenAccent.copy(0.30f) else StrokeLight, RoundedCornerShape(10.dp))
+                                .clickable(enabled = !isProcessing, onClick = onDone)
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Icon(Icons.Default.Check, "Done", tint = if (!isProcessing) GreenAccent else InkDim, modifier = Modifier.size(15.dp))
+                                Text("Done", color = if (!isProcessing) GreenAccent else InkDim, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                    Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(1.dp).background(StrokeLight))
+                }
+            }
+
+            // ── Tab pills ─────────────────────────────────────────────────────
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)
+                    .clip(RoundedCornerShape(12.dp)).background(BgSurface)
+                    .border(1.dp, StrokeLight, RoundedCornerShape(12.dp)).padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf("Crop" to Icons.Default.CropFree, "Enhance" to Icons.Default.AutoFixHigh)
+                    .forEachIndexed { i, (label, icon) ->
+                        val sel = selectedTab == i
+                        Box(
+                            Modifier.weight(1f).clip(RoundedCornerShape(9.dp))
+                                .background(Color.Transparent)
+                                .border(if (sel) 1.5.dp else 1.dp, if (sel) Coral else Color.Transparent, RoundedCornerShape(9.dp))
+                                .clickable { selectedTab = i }
+                                .padding(vertical = 9.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Icon(icon, null, Modifier.size(14.dp), tint = if (sel) Coral else InkDim)
+                                Text(label, color = if (sel) Coral else InkMid, fontSize = 13.sp, fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal)
+                            }
+                        }
+                    }
+            }
+
+            // ── Tab content ───────────────────────────────────────────────────
+            when (selectedTab) {
+                0 -> CropTab(
+                    bitmap           = page.originalBitmap,
+                    corners          = page.corners,
+                    isProcessing     = isProcessing,
+                    onCornersChanged = onCornersChanged,
+                    modifier         = Modifier.weight(1f)
+                )
+                1 -> EnhanceTab(
+                    bitmap              = page.originalBitmap,
+                    processedBitmap     = page.displayBitmap,
+                    currentFilter       = currentFilter,
+                    isProcessing        = isProcessing,
+                    brightness          = brightness,
+                    contrast            = contrast,
+                    onFilterSelected    = onFilterSelected,
+                    onBrightnessChanged = { brightness = it },
+                    onContrastChanged   = { contrast   = it },
+                    onSliderFinished    = { onBrightnessContrastChanged(brightness, contrast) },
+                    modifier            = Modifier.weight(1f)
+                )
+            }
+
+            // ── Bottom done bar ───────────────────────────────────────────────
+            Box(
+                Modifier.fillMaxWidth().background(BgBase).navigationBarsPadding()
+                    .topDivider(topBorder = true).padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                Box(
+                    Modifier.fillMaxWidth().height(48.dp)
+                        .shadow(8.dp, RoundedCornerShape(14.dp), ambientColor = Color(0x22E8603C), spotColor = Color(0x22E8603C))
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (!isProcessing) Brush.horizontalGradient(listOf(Coral, Color(0xFFD94860))) else Brush.horizontalGradient(listOf(BgSurface, BgSurface)))
+                        .clickable(enabled = !isProcessing, onClick = onDone),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isProcessing) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CircularProgressIndicator(Modifier.size(16.dp), color = Coral, strokeWidth = 2.dp)
+                            Text("Processing…", color = InkMid, fontSize = 14.sp)
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Text("Done", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
-
-                OcrState.IDLE -> Unit
             }
         }
     }
 }
 
+// helper to draw top border on a Box
+private fun Modifier.topDivider(topBorder: Boolean): Modifier = if (topBorder)
+    this.then(Modifier.background(StrokeLight).padding(top = 1.dp))
+else this
+
 // ══════════════════════════════════════════════════════════════
-// CROP TAB  —  shows ORIGINAL bitmap + draggable corner handles
+// CROP TAB
 // ══════════════════════════════════════════════════════════════
 
 @Composable
 private fun CropTab(
-    bitmap: Bitmap,           // ← always the original, unprocessed bitmap
-    corners: DocumentCorners?,
-    isProcessing: Boolean,
+    bitmap          : Bitmap,
+    corners         : DocumentCorners?,
+    isProcessing    : Boolean,
     onCornersChanged: (DocumentCorners) -> Unit,
-    modifier: Modifier = Modifier
+    modifier        : Modifier = Modifier
 ) {
     var localCorners by remember { mutableStateOf(corners) }
     var lastHash     by remember { mutableIntStateOf(corners.hashCode()) }
@@ -495,10 +321,9 @@ private fun CropTab(
     var zoom by remember { mutableFloatStateOf(1f) }
     var panX by remember { mutableFloatStateOf(0f) }
     var panY by remember { mutableFloatStateOf(0f) }
-
-    var canvasW by remember { mutableFloatStateOf(1f) }
-    var canvasH by remember { mutableFloatStateOf(1f) }
-    var baseSf  by remember { mutableFloatStateOf(1f) }
+    var canvasW     by remember { mutableFloatStateOf(1f) }
+    var canvasH     by remember { mutableFloatStateOf(1f) }
+    var baseSf      by remember { mutableFloatStateOf(1f) }
     var draggingIdx by remember { mutableIntStateOf(-1) }
 
     fun imgLeft() = (canvasW - bitmap.width  * baseSf * zoom) / 2f + panX
@@ -511,23 +336,20 @@ private fun CropTab(
     }
 
     fun applyZoom(factor: Float, fx: Float, fy: Float) {
-        val nz = (zoom * factor).coerceIn(1f, 8f)
-        if (nz == zoom) return
-        val r  = nz / zoom
-        zoom   = nz
+        val nz = (zoom * factor).coerceIn(1f, 8f); if (nz == zoom) return
+        val r  = nz / zoom; zoom = nz
         if (nz <= 1f) { panX = 0f; panY = 0f }
         else { val (cx, cy) = clampPan(fx + (panX - fx) * r, fy + (panY - fy) * r, nz); panX = cx; panY = cy }
     }
 
     fun screenHandles(): List<Offset> {
-        val c  = localCorners ?: return emptyList()
-        val zs = baseSf * zoom
-        val ox = imgLeft(); val oy = imgTop()
+        val c = localCorners ?: return emptyList()
+        val zs = baseSf * zoom; val ox = imgLeft(); val oy = imgTop()
         return listOf(
-            Offset(c.topLeft.x    * zs + ox, c.topLeft.y    * zs + oy),
-            Offset(c.topRight.x   * zs + ox, c.topRight.y   * zs + oy),
-            Offset(c.bottomLeft.x * zs + ox, c.bottomLeft.y * zs + oy),
-            Offset(c.bottomRight.x* zs + ox, c.bottomRight.y* zs + oy)
+            Offset(c.topLeft.x     * zs + ox, c.topLeft.y     * zs + oy),
+            Offset(c.topRight.x    * zs + ox, c.topRight.y    * zs + oy),
+            Offset(c.bottomLeft.x  * zs + ox, c.bottomLeft.y  * zs + oy),
+            Offset(c.bottomRight.x * zs + ox, c.bottomRight.y * zs + oy)
         )
     }
 
@@ -540,11 +362,9 @@ private fun CropTab(
         return best
     }
 
-    Box(modifier.fillMaxWidth().clipToBounds()) {
+    Box(modifier.fillMaxWidth().background(BgPreview).clipToBounds()) {
         Canvas(
-            Modifier
-                .fillMaxSize()
-                .clipToBounds()
+            Modifier.fillMaxSize().clipToBounds()
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         val firstDown = awaitFirstDown(requireUnconsumed = false)
@@ -553,12 +373,9 @@ private fun CropTab(
                         val cornerHit  = hitTest(firstPos)
                         var isDragging = cornerHit >= 0
                         draggingIdx    = cornerHit
-
                         var secondId: PointerId? = null
                         var prevA = firstPos; var prevB = firstPos; var prevDist = 0f
-
-                        fun dist(a: Offset, b: Offset) =
-                            sqrt((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y)).coerceAtLeast(0.1f)
+                        fun dist(a: Offset, b: Offset) = sqrt((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y)).coerceAtLeast(0.1f)
 
                         do {
                             val event: PointerEvent = awaitPointerEvent()
@@ -576,16 +393,11 @@ private fun CropTab(
                                     val pA = pressed.firstOrNull { it.id == firstId }
                                     val pB = pressed.firstOrNull { it.id == secondId }
                                     if (pA != null && pB != null) {
-                                        val curA = pA.position; val curB = pB.position
-                                        val curD = dist(curA, curB)
-                                        val fx   = (curA.x + curB.x) / 2f
-                                        val fy   = (curA.y + curB.y) / 2f
+                                        val curA = pA.position; val curB = pB.position; val curD = dist(curA, curB)
+                                        val fx = (curA.x + curB.x) / 2f; val fy = (curA.y + curB.y) / 2f
                                         if (prevDist > 0f) applyZoom(curD / prevDist, fx, fy)
                                         if (zoom > 1f) {
-                                            val (cx, cy) = clampPan(
-                                                panX + (fx - (prevA.x+prevB.x)/2f),
-                                                panY + (fy - (prevA.y+prevB.y)/2f), zoom
-                                            )
+                                            val (cx, cy) = clampPan(panX + (fx - (prevA.x+prevB.x)/2f), panY + (fy - (prevA.y+prevB.y)/2f), zoom)
                                             panX = cx; panY = cy
                                         }
                                         prevA = curA; prevB = curB; prevDist = curD
@@ -601,25 +413,12 @@ private fun CropTab(
                                                 val zs = baseSf * zoom
                                                 val dx = (ptr.position.x - ptr.previousPosition.x) / zs
                                                 val dy = (ptr.position.y - ptr.previousPosition.y) / zs
-                                                val cur = when (draggingIdx) {
-                                                    0 -> c.topLeft;    1 -> c.topRight
-                                                    2 -> c.bottomLeft; else -> c.bottomRight
-                                                }
-                                                val np = PointF(
-                                                    (cur.x + dx).coerceIn(0f, bitmap.width.toFloat()),
-                                                    (cur.y + dy).coerceIn(0f, bitmap.height.toFloat())
-                                                )
-                                                localCorners = when (draggingIdx) {
-                                                    0 -> c.copy(topLeft    = np)
-                                                    1 -> c.copy(topRight   = np)
-                                                    2 -> c.copy(bottomLeft = np)
-                                                    else -> c.copy(bottomRight = np)
-                                                }
+                                                val cur = when (draggingIdx) { 0 -> c.topLeft; 1 -> c.topRight; 2 -> c.bottomLeft; else -> c.bottomRight }
+                                                val np  = PointF((cur.x + dx).coerceIn(0f, bitmap.width.toFloat()), (cur.y + dy).coerceIn(0f, bitmap.height.toFloat()))
+                                                localCorners = when (draggingIdx) { 0 -> c.copy(topLeft = np); 1 -> c.copy(topRight = np); 2 -> c.copy(bottomLeft = np); else -> c.copy(bottomRight = np) }
                                             }
                                         } else if (zoom > 1f) {
-                                            val dx = ptr.position.x - ptr.previousPosition.x
-                                            val dy = ptr.position.y - ptr.previousPosition.y
-                                            val (cx, cy) = clampPan(panX + dx, panY + dy, zoom)
+                                            val (cx, cy) = clampPan(panX + ptr.position.x - ptr.previousPosition.x, panY + ptr.position.y - ptr.previousPosition.y, zoom)
                                             panX = cx; panY = cy
                                         }
                                         ptr.consume()
@@ -630,21 +429,17 @@ private fun CropTab(
 
                         if (isDragging) {
                             val norm = localCorners?.let { normalizeCorners(it) }
-                            localCorners = norm
-                            norm?.let { onCornersChanged(it) }
+                            localCorners = norm; norm?.let { onCornersChanged(it) }
                         }
                         draggingIdx = -1
                     }
                 }
         ) {
-            canvasW = size.width
-            canvasH = size.height
+            canvasW = size.width; canvasH = size.height
             baseSf  = minOf(canvasW / bitmap.width, canvasH / bitmap.height)
+            val zs  = baseSf * zoom; val ox = imgLeft(); val oy = imgTop()
 
-            val zs = baseSf * zoom
-            val ox = imgLeft(); val oy = imgTop()
-
-            // Draw the ORIGINAL bitmap (no filter applied in crop view)
+            // Draw bitmap
             drawContext.canvas.nativeCanvas.drawBitmap(
                 bitmap, null,
                 android.graphics.RectF(ox, oy, ox + bitmap.width * zs, oy + bitmap.height * zs),
@@ -652,23 +447,19 @@ private fun CropTab(
             )
 
             localCorners?.let { c ->
-                val tl = Offset(c.topLeft.x    * zs + ox, c.topLeft.y    * zs + oy)
-                val tr = Offset(c.topRight.x   * zs + ox, c.topRight.y   * zs + oy)
-                val bl = Offset(c.bottomLeft.x * zs + ox, c.bottomLeft.y * zs + oy)
-                val br = Offset(c.bottomRight.x* zs + ox, c.bottomRight.y* zs + oy)
+                val tl = Offset(c.topLeft.x     * zs + ox, c.topLeft.y     * zs + oy)
+                val tr = Offset(c.topRight.x    * zs + ox, c.topRight.y    * zs + oy)
+                val bl = Offset(c.bottomLeft.x  * zs + ox, c.bottomLeft.y  * zs + oy)
+                val br = Offset(c.bottomRight.x * zs + ox, c.bottomRight.y * zs + oy)
 
-                // Dimmed overlay outside the crop region
-                val poly = Path().apply {
-                    moveTo(tl.x, tl.y); lineTo(tr.x, tr.y)
-                    lineTo(br.x, br.y); lineTo(bl.x, bl.y); close()
-                }
-                drawPath(poly, Color(0x1A2979FF))
-                drawPath(poly, Color(0xFF2979FF), style = Stroke(2.dp.toPx()))
+                // Crop region fill + border
+                val poly = Path().apply { moveTo(tl.x, tl.y); lineTo(tr.x, tr.y); lineTo(br.x, br.y); lineTo(bl.x, bl.y); close() }
+                drawPath(poly, Coral.copy(alpha = 0.08f))
+                drawPath(poly, Coral, style = Stroke(2.dp.toPx()))
 
-                // Edge lines as dashes between corners
+                // Mid-edge dots
                 listOf(tl to tr, tr to br, br to bl, bl to tl).forEach { (a, b) ->
-                    val mx = (a.x + b.x) / 2f; val my = (a.y + b.y) / 2f
-                    drawCircle(Color(0xFF2979FF).copy(alpha = 0.35f), 3.dp.toPx(), Offset(mx, my))
+                    drawCircle(Coral.copy(alpha = 0.30f), 3.dp.toPx(), Offset((a.x + b.x) / 2f, (a.y + b.y) / 2f))
                 }
 
                 // Corner handles
@@ -676,133 +467,131 @@ private fun CropTab(
                 listOf(tl, tr, bl, br).forEachIndexed { i, pt ->
                     val active = i == draggingIdx
                     val r = if (active) hr * 1.4f else hr
-                    drawCircle(Color(0xFF0D0D0D), r + 2.dp.toPx(), pt)   // shadow ring
+                    drawCircle(Color(0x22000000), r + 2.dp.toPx(), pt)   // subtle shadow
                     drawCircle(Color.White, r, pt)
                     if (active) {
-                        drawCircle(Color(0xFF2979FF), r, pt)
+                        drawCircle(Coral, r, pt)
                         drawCircle(Color.White, r * 0.4f, pt)
                     } else {
-                        drawCircle(Color(0xFF2979FF), r, pt, style = Stroke(2.5f.dp.toPx()))
+                        drawCircle(Coral, r, pt, style = Stroke(2.5f.dp.toPx()))
                     }
                 }
             }
         }
 
+        // Dim + spinner while processing
         if (isProcessing) {
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(0.45f)),
-                contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Color.White)
+            Box(Modifier.fillMaxSize().background(Color.White.copy(0.55f)), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = Coral)
             }
         }
     }
 }
 
 // ══════════════════════════════════════════════════════════════
-// ENHANCE TAB  —  live ColorMatrix preview while slider moves
+// ENHANCE TAB
 // ══════════════════════════════════════════════════════════════
 
 @Composable
 private fun EnhanceTab(
-    bitmap: Bitmap,            // ← original bitmap; ColorMatrix applied live
-    currentFilter: FilterType,
-    isProcessing: Boolean,
-    brightness: Double,
-    contrast: Double,
-    onFilterSelected: (FilterType) -> Unit,
+    bitmap             : Bitmap,
+    processedBitmap    : Bitmap,
+    currentFilter      : FilterType,
+    isProcessing       : Boolean,
+    brightness         : Double,
+    contrast           : Double,
+    onFilterSelected   : (FilterType) -> Unit,
     onBrightnessChanged: (Double) -> Unit,
-    onContrastChanged: (Double) -> Unit,
-    /** Triggers ViewModel processing once finger leaves slider */
-    onSliderFinished: () -> Unit,
-    modifier: Modifier = Modifier
+    onContrastChanged  : (Double) -> Unit,
+    onSliderFinished   : () -> Unit,
+    modifier           : Modifier = Modifier
 ) {
-    // Recompute the paint whenever brightness, contrast, or filter changes.
-    // Because this is inside `remember`, it only recomputes when keys change —
-    // cheap enough for every pointer-move event on a slider.
     val livePaint by remember(brightness, contrast, currentFilter) {
         mutableStateOf(buildLivePaint(brightness, contrast, currentFilter))
     }
 
+    var showOriginal by remember { mutableStateOf(false) }
+    val processedId  = processedBitmap.generationId
+    LaunchedEffect(processedId) { showOriginal = false }
+
+    val displayBmp = if (showOriginal) bitmap else processedBitmap
+
     Column(modifier.fillMaxWidth()) {
 
-        // ── Preview ──────────────────────────────────────────
+        // ── Preview ───────────────────────────────────────────────────────────
         Box(
-            Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .clipToBounds()
-                .background(Color(0xFF0D0D0D)),
+            Modifier.fillMaxWidth().weight(1f).clipToBounds().background(BgPreview),
             contentAlignment = Alignment.Center
         ) {
             Canvas(Modifier.fillMaxSize()) {
                 val cw = size.width; val ch = size.height
-                val iw = bitmap.width.toFloat(); val ih = bitmap.height.toFloat()
+                val iw = displayBmp.width.toFloat(); val ih = displayBmp.height.toFloat()
                 val s  = minOf(cw / iw, ch / ih)
-                val sw = iw * s; val sh = ih * s
-                val oX = (cw - sw) / 2f; val oY = (ch - sh) / 2f
+                val oX = (cw - iw * s) / 2f; val oY = (ch - ih * s) / 2f
 
-                // Draw with the live ColorMatrix paint — zero ViewModel calls
                 drawContext.canvas.nativeCanvas.drawBitmap(
-                    bitmap, null,
-                    android.graphics.RectF(oX, oY, oX + sw, oY + sh),
-                    livePaint           // ← applied every recompose
+                    displayBmp, null,
+                    android.graphics.RectF(oX, oY, oX + iw * s, oY + ih * s),
+                    if (showOriginal) null else livePaint
                 )
             }
+
+            // Processing overlay
             if (isProcessing) {
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(0.4f)),
-                    contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = Color.White)
+                Box(Modifier.fillMaxSize().background(Color.White.copy(0.55f)), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = Coral)
+                }
+            }
+
+            // Before / after toggle
+            val hasEnhancement = currentFilter != FilterType.ORIGINAL || brightness != 0.0 || contrast != 1.0
+            if (hasEnhancement && !isProcessing) {
+                Box(
+                    Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp)
+                        .shadow(6.dp, RoundedCornerShape(20.dp), ambientColor = Color(0x18000000))
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(if (showOriginal) BgCard else Coral)
+                        .border(1.dp, if (showOriginal) StrokeLight else Color.Transparent, RoundedCornerShape(20.dp))
+                        .clickable { showOriginal = !showOriginal }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Icon(if (showOriginal) Icons.Default.ImageSearch else Icons.Default.AutoFixHigh, null, Modifier.size(14.dp), tint = if (showOriginal) InkMid else Color.White)
+                        Text(if (showOriginal) "Original" else "Enhanced", color = if (showOriginal) InkMid else Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
 
-        // ── Controls panel ───────────────────────────────────
+        // ── Controls panel ────────────────────────────────────────────────────
         Column(
-            Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF131313))
-                .padding(top = 14.dp, bottom = 10.dp)
+            Modifier.fillMaxWidth().background(BgBase)
+                .topDivider(topBorder = true).padding(top = 14.dp, bottom = 10.dp)
         ) {
-
             // Filter chips
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 14.dp),
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterType.entries.forEach { f ->
                     val sel = f == currentFilter
                     Box(
-                        Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(
-                                if (sel) Color(0xFF2979FF)
-                                else Color(0xFF1E1E1E)
-                            )
-                            .border(
-                                1.dp,
-                                if (sel) Color(0xFF2979FF) else Color(0xFF2A2A2A),
-                                RoundedCornerShape(20.dp)
-                            )
+                        Modifier.clip(RoundedCornerShape(20.dp))
+                            .background(if (sel) Coral else BgSurface)
+                            .border(1.dp, if (sel) Coral else StrokeLight, RoundedCornerShape(20.dp))
                             .clickable { onFilterSelected(f) }
-                            .padding(horizontal = 18.dp, vertical = 9.dp),
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            f.displayName,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (sel) Color.White else Color.White.copy(0.55f)
-                        )
+                        Text(f.displayName, fontSize = 13.sp, fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal, color = if (sel) Color.White else InkMid)
                     }
                 }
             }
 
-            Spacer(Modifier.height(14.dp))
-            HorizontalDivider(color = Color(0xFF1E1E1E), thickness = 1.dp)
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(StrokeLight).padding(horizontal = 14.dp))
+            Spacer(Modifier.height(8.dp))
 
-            // Brightness slider
             SliderRow(
                 icon        = Icons.Default.BrightnessHigh,
                 label       = "Bright",
@@ -812,8 +601,6 @@ private fun EnhanceTab(
                 onChange    = { onBrightnessChanged(it.toDouble()) },
                 onFinished  = onSliderFinished
             )
-
-            // Contrast slider
             SliderRow(
                 icon        = Icons.Default.Contrast,
                 label       = "Contrast",
@@ -823,60 +610,51 @@ private fun EnhanceTab(
                 onChange    = { onContrastChanged(it.toDouble()) },
                 onFinished  = onSliderFinished
             )
-
             Spacer(Modifier.height(4.dp))
         }
     }
 }
 
-// ── Shared slider row ─────────────────────────────────────────
+// ── Slider row ────────────────────────────────────────────────────────────────
 
 @Composable
 private fun SliderRow(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    value: Float,
-    range: ClosedFloatingPointRange<Float>,
+    icon       : androidx.compose.ui.graphics.vector.ImageVector,
+    label      : String,
+    value      : Float,
+    range      : ClosedFloatingPointRange<Float>,
     neutralMark: Float,
-    onChange: (Float) -> Unit,
-    onFinished: () -> Unit
+    onChange   : (Float) -> Unit,
+    onFinished : () -> Unit
 ) {
     Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 2.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, null, Modifier.size(18.dp), tint = Color.White.copy(0.5f))
+        Icon(icon, null, Modifier.size(17.dp), tint = InkMid)
         Spacer(Modifier.width(8.dp))
-        Text(
-            label,
-            style    = MaterialTheme.typography.labelSmall,
-            color    = Color.White.copy(0.5f),
-            modifier = Modifier.width(58.dp)
-        )
+        Text(label, color = InkMid, fontSize = 12.sp, modifier = Modifier.width(52.dp))
         Slider(
             value                 = value,
             onValueChange         = onChange,
-            onValueChangeFinished = onFinished,   // ← commits to ViewModel
+            onValueChangeFinished = onFinished,
             valueRange            = range,
             modifier              = Modifier.weight(1f),
             colors                = SliderDefaults.colors(
-                thumbColor            = Color.White,
-                activeTrackColor      = Color(0xFF2979FF),
-                inactiveTrackColor    = Color(0xFF2A2A2A)
+                thumbColor         = Coral,
+                activeTrackColor   = Coral,
+                inactiveTrackColor = StrokeLight
             )
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            // Show delta from neutral so user knows how far off centre they are
             when {
                 value == neutralMark -> "—"
                 value > neutralMark  -> "+%.0f".format((value - neutralMark) / (range.endInclusive - neutralMark) * 100)
                 else                 -> "%.0f".format((value - neutralMark) / (neutralMark - range.start) * 100)
             },
-            style    = MaterialTheme.typography.labelSmall,
-            color    = Color.White.copy(0.4f),
+            color    = InkDim,
+            fontSize = 11.sp,
             modifier = Modifier.width(28.dp)
         )
     }

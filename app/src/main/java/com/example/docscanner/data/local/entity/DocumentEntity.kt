@@ -11,5 +11,6 @@ data class DocumentEntity(
     val pageCount: Int,
     val thumbnailPath: String? = null,
     val pdfPath: String? = null,
+    val docClassLabel: String? = null,
     val createdAt: Long
 )

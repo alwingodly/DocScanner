@@ -20,6 +20,11 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // ── Fix for deprecated aaptOptions syntax ─────────────────────────────────
+    androidResources {
+        noCompress += "tflite"   // don't compress the model file in APK
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -71,7 +76,11 @@ dependencies {
     implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")
 
     // ── ExifInterface (for correct image rotation from gallery/scanner) ──
-    implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
+
+    // ── TensorFlow Lite (document classification) ──
+    implementation("org.tensorflow:tensorflow-lite:2.17.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.5.0")
 
     // ── Hilt DI ──
     implementation(libs.hilt.android)

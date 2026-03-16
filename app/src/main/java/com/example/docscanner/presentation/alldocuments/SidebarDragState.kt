@@ -19,15 +19,12 @@ class SidebarDragState {
     var dragOffsetY by mutableStateOf(0f)
         private set
 
-    /** Absolute window-space X where the drag began */
     var startX by mutableStateOf(0f)
         private set
 
-    /** Absolute window-space Y where the drag began */
     var startY by mutableStateOf(0f)
         private set
 
-    // ── Info needed by the root-level ghost card ──────────────────────────────
     var draggingThumbnailPath by mutableStateOf<String?>(null)
         private set
 
@@ -37,7 +34,7 @@ class SidebarDragState {
     var draggingPageCount by mutableStateOf(0)
         private set
 
-    // ── Hovered folder ────────────────────────────────────────────────────────
+    // Hovered folder
     var hoveredFolderId by mutableStateOf<String?>(null)
         private set
 
@@ -47,7 +44,17 @@ class SidebarDragState {
         folderBounds[folderId] = Pair(top, bottom)
     }
 
-    // ── Source screens call these ─────────────────────────────────────────────
+    // Delete zone
+    var isOverDeleteZone by mutableStateOf(false)
+        private set
+
+    // Exact window-space bounds of the rendered DragDeleteZone widget
+    var deleteZoneLeft   by mutableStateOf(0f)
+    var deleteZoneTop    by mutableStateOf(Float.MAX_VALUE)
+    var deleteZoneRight  by mutableStateOf(Float.MAX_VALUE)
+    var deleteZoneBottom by mutableStateOf(Float.MAX_VALUE)
+
+    var sidebarRightEdge by mutableStateOf(Float.MAX_VALUE)
 
     fun onDragStart(
         documentId   : String,
@@ -64,6 +71,7 @@ class SidebarDragState {
         dragOffsetX           = 0f
         dragOffsetY           = 0f
         hoveredFolderId       = null
+        isOverDeleteZone      = false
         draggingThumbnailPath = thumbnailPath
         draggingDocumentName  = documentName
         draggingPageCount     = pageCount
@@ -76,7 +84,7 @@ class SidebarDragState {
     }
 
     fun onDragEnd(): String? {
-        val target = hoveredFolderId
+        val target = if (isOverDeleteZone) null else hoveredFolderId
         reset()
         return target
     }
@@ -87,18 +95,20 @@ class SidebarDragState {
         if (isDragging) hoveredFolderId = folderId
     }
 
-    /**
-     * Right edge of the sidebar in window-space pixels.
-     * Populated by the sidebar's onGloballyPositioned.
-     * Defaults to Float.MAX_VALUE so hover works before first measurement.
-     */
-    var sidebarRightEdge by mutableStateOf(Float.MAX_VALUE)
-
     private fun recalculateHover() {
         val currentX = startX + dragOffsetX
         val currentY = startY + dragOffsetY
 
-        // Only gate on X once the sidebar has been measured
+        // Only active when pointer is physically inside the rendered widget bounds
+        isOverDeleteZone = deleteZoneTop < Float.MAX_VALUE &&
+                currentX in deleteZoneLeft..deleteZoneRight &&
+                currentY in deleteZoneTop..deleteZoneBottom
+
+        if (isOverDeleteZone) {
+            hoveredFolderId = null
+            return
+        }
+
         if (sidebarRightEdge < Float.MAX_VALUE && currentX > sidebarRightEdge) {
             hoveredFolderId = null
             return
@@ -115,6 +125,7 @@ class SidebarDragState {
         dragOffsetX           = 0f
         dragOffsetY           = 0f
         hoveredFolderId       = null
+        isOverDeleteZone      = false
         draggingThumbnailPath = null
         draggingDocumentName  = ""
         draggingPageCount     = 0

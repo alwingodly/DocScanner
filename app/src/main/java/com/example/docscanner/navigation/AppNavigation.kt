@@ -22,7 +22,6 @@ import com.example.docscanner.presentation.camera.CameraScreen
 import com.example.docscanner.presentation.edit.EditScreen
 import com.example.docscanner.presentation.folder.FolderDetailScreen
 import com.example.docscanner.presentation.home.HomeViewModel
-import com.example.docscanner.presentation.preview.PreviewScreen
 import com.example.docscanner.presentation.review.ReviewScreen
 import com.example.docscanner.presentation.shared.ScannerViewModel
 import com.example.docscanner.presentation.viewer.DocumentType
@@ -101,10 +100,8 @@ fun DocScannerNavHost(
             scannerViewModel.onReset()
 
             if (targetFolderId.isNotEmpty()) {
-                // Scanned from a folder — pop Camera+Review, land back on FolderDetail
                 navController.popBackStack(Screen.FolderDetail.route, inclusive = false)
             } else {
-                // Scanned from AllDocuments FAB — pop Camera+Review, land on AllDocuments
                 navController.popBackStack(Screen.AllDocuments.route, inclusive = false)
                 selectedTab = BottomTab.ALL_DOCS
             }
@@ -192,9 +189,11 @@ private fun AppNavHost(
             AllDocumentsScreen(
                 dragState       = dragState,
                 onDocumentClick = { doc ->
-                    val uri = doc.thumbnailPath ?: return@AllDocumentsScreen
+                    // ── FIX: check pdfPath first, open as PDF if available ────
+                    val type = if (doc.pdfPath != null) DocumentType.PDF else DocumentType.IMAGE
+                    val uri  = doc.pdfPath ?: doc.thumbnailPath ?: return@AllDocumentsScreen
                     navController.navigate(
-                        Screen.Viewer.createRoute(doc.name, DocumentType.IMAGE, uri)
+                        Screen.Viewer.createRoute(doc.name, type, uri)
                     )
                 },
                 onScanClick = {
@@ -253,17 +252,6 @@ private fun AppNavHost(
             }
         }
 
-        // ── Preview ───────────────────────────────────────────────────────────
-        composable(Screen.Preview.route) {
-            PreviewScreen(
-                pages            = state.pages,
-                onCornersChanged = { idx, corners -> scannerViewModel.onUpdatePageCorners(idx, corners) },
-                onDeletePage     = { scannerViewModel.onDeletePage(it) },
-                onBack           = { navController.popBackStack() },
-                onDone           = { navController.navigate(Screen.Camera.route) }
-            )
-        }
-
         // ── Review ────────────────────────────────────────────────────────────
         composable(Screen.Review.route) {
             ReviewScreen(
@@ -277,9 +265,7 @@ private fun AppNavHost(
                 },
                 onApplyFilterToAll = { scannerViewModel.onBatchFilterApply(it) },
                 onAddMore          = { navController.navigate(Screen.Camera.route) },
-                // Save as PDF → saves merged PDF then navigates to AllDocuments via LaunchedEffect
                 onSaveAsPdf        = { scannerViewModel.onSaveToFolderAsPdf() },
-                // Save as images → saves individual images then navigates to AllDocuments
                 onSaveAsImages     = { scannerViewModel.onSaveToFolderAsImages() },
                 onBack             = { navController.popBackStack() }
             )
