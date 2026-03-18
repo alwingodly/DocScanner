@@ -39,8 +39,8 @@ import kotlinx.coroutines.withContext
 fun CameraScreen(
     pageCount: Int,
     lastCapturedBitmap: Bitmap?,
+    isSaving: Boolean,
     onPhotoCaptured: (Bitmap, DocumentCorners?) -> Unit,
-    onPreview: () -> Unit,
     onDone: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -65,11 +65,11 @@ fun CameraScreen(
                         uriToBitmap(context, uri)?.let { onPhotoCaptured(it, null) }
                     }
                     isProcessing = false
-                    // ✅ Navigate to review/preview after all pages are processed
+                    // Trigger auto-save (navigation handled by NavHost)
                     onDone()
                 }
             },
-            onCancelled = { onBack() }, // user pressed back in ML Kit → go back
+            onCancelled = { onBack() },
             onError     = { e -> errorMessage = "Scanner error: ${e.message}" }
         )
     }
@@ -84,7 +84,7 @@ fun CameraScreen(
                 uriToBitmap(context, uri)?.let { onPhotoCaptured(it, null) }
             }
             isProcessing = false
-            onDone() // also navigate after gallery import
+            onDone()
         }
     }
 
@@ -103,7 +103,7 @@ fun CameraScreen(
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // UI — only visible while processing scanned pages
+    // UI — visible while processing / saving scanned pages
     // ══════════════════════════════════════════════════════════════════════════
 
     Column(
@@ -123,20 +123,26 @@ fun CameraScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(onClick = onBack, enabled = !isSaving && !isProcessing) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White)
             }
             Text(
-                if (pageCount == 0) "Scan Document"
-                else "$pageCount ${if (pageCount == 1) "page" else "pages"}",
+                when {
+                    isSaving -> "Saving…"
+                    pageCount == 0 -> "Scan Document"
+                    else -> "$pageCount ${if (pageCount == 1) "page" else "pages"}"
+                },
                 color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Medium
             )
-            IconButton(onClick = { galleryLauncher.launch("image/*") }) {
+            IconButton(
+                onClick = { galleryLauncher.launch("image/*") },
+                enabled = !isSaving && !isProcessing
+            ) {
                 Icon(Icons.Default.PhotoLibrary, "Gallery", tint = Color.White)
             }
         }
 
-        // ── CENTRE — spinner while processing ─────────────────────────────────
+        // ── CENTRE — spinner while processing or saving ───────────────────────
         Box(
             Modifier
                 .weight(1f)
@@ -144,11 +150,15 @@ fun CameraScreen(
                 .background(Color(0xFF111111)),
             contentAlignment = Alignment.Center
         ) {
-            if (isProcessing) {
+            if (isProcessing || isSaving) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = Color.White)
                     Spacer(Modifier.height(16.dp))
-                    Text("Processing pages…", color = Color.White, fontSize = 14.sp)
+                    Text(
+                        if (isSaving) "Saving documents…" else "Processing pages…",
+                        color = Color.White,
+                        fontSize = 14.sp
+                    )
                 }
             }
 
@@ -182,7 +192,6 @@ fun CameraScreen(
                             .fillMaxSize()
                             .clip(RoundedCornerShape(8.dp))
                             .border(2.dp, Color.White.copy(0.7f), RoundedCornerShape(8.dp))
-                            .clickable(onClick = onPreview)
                     ) {
                         Canvas(Modifier.fillMaxSize()) {
                             val bmp = lastCapturedBitmap
@@ -206,21 +215,8 @@ fun CameraScreen(
                 }
             }
 
-            // Done
-            Box(Modifier.size(width = 50.dp, height = 64.dp), contentAlignment = Alignment.Center) {
-                if (pageCount > 0) {
-                    Box(
-                        Modifier
-                            .size(50.dp).clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.primary)
-                            .clickable(onClick = onDone),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Check, "Done",
-                            tint = Color.White, modifier = Modifier.size(26.dp))
-                    }
-                }
-            }
+            // Spacer to balance layout (Done button removed — save is automatic)
+            Spacer(Modifier.size(width = 50.dp, height = 64.dp))
         }
     }
 }

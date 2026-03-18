@@ -5,11 +5,6 @@ import android.graphics.PointF
 
 /**
  * Document classification types from TFLite model.
- *
- * Named DocClassType (not DocumentType) to avoid clash with
- * com.example.docscanner.presentation.viewer.DocumentType (PDF/IMAGE).
- *
- * ⚠️ The label-to-index mapping is in DocumentClassifier.LABELS.
  */
 enum class DocClassType(val displayName: String) {
     AADHAAR("Aadhaar"),
@@ -22,15 +17,6 @@ enum class DocClassType(val displayName: String) {
 
 /**
  * Represents a single scanned page.
- *
- * A page goes through this lifecycle:
- *   1. Camera captures → originalBitmap (raw photo)
- *   2. Edge detection  → corners (4 points of document boundary)
- *   3. Crop & warp     → croppedBitmap (flattened top-down view)
- *   4. Filter applied   → enhancedBitmap (B&W, grayscale, etc.)
- *   5. Classification   → docClassType (Aadhaar, PAN, etc.)
- *
- * displayBitmap always returns the most processed version available.
  */
 data class ScannedPage(
     val id: String = System.currentTimeMillis().toString(),
@@ -39,7 +25,7 @@ data class ScannedPage(
     val enhancedBitmap: Bitmap? = null,
     val corners: DocumentCorners? = null,
     val filterType: FilterType = FilterType.ORIGINAL,
-    val docClassType: DocClassType? = null,       // null = not yet classified
+    val docClassType: DocClassType? = null,
     val createdAt: Long = System.currentTimeMillis()
 ) {
     val displayBitmap: Bitmap
@@ -104,6 +90,25 @@ data class Document(
     val pageCount: Int,
     val thumbnailPath: String? = null,
     val pdfPath: String? = null,
-    val docClassLabel: String? = null,    // store classification label for saved docs
-    val createdAt: Long = System.currentTimeMillis()
-)
+    val docClassLabel: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+
+    /**
+     * For merged PDFs: comma-separated IDs of the source image documents.
+     * Null for normal (non-merged) documents.
+     */
+    val mergedFromDocumentIds: String? = null,
+
+    /**
+     * True if this image document has been merged into a PDF.
+     * Hidden from normal document lists, restored on unmerge.
+     */
+    val isMergedSource: Boolean = false
+) {
+    /** True if this document was created by merging other documents */
+    val isMergedPdf: Boolean get() = !mergedFromDocumentIds.isNullOrEmpty()
+
+    /** Get the list of source document IDs */
+    val sourceDocumentIds: List<String>
+        get() = mergedFromDocumentIds?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
+}

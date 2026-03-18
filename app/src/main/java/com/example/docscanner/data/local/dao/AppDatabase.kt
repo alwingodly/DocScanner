@@ -7,7 +7,7 @@ import com.example.docscanner.data.local.entity.FolderEntity
 
 @Database(
     entities     = [FolderEntity::class, DocumentEntity::class],
-    version      = 4,
+    version      = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

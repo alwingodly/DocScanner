@@ -1,3 +1,0 @@
-aadhaar_back
-aadhaar_front
-pan_card

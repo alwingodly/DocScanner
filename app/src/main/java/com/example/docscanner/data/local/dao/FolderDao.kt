@@ -1,6 +1,8 @@
 package com.example.docscanner.data.local.dao
 
 import androidx.room.*
+import androidx.sqlite.db.SimpleSQLiteQuery
+import androidx.sqlite.db.SupportSQLiteQuery
 import com.example.docscanner.data.local.entity.FolderEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -8,17 +10,26 @@ import kotlinx.coroutines.flow.Flow
 interface FolderDao {
 
     /**
-     * Live folder list with document count calculated directly from the
-     * documents table via subquery — always accurate after any insert,
-     * delete, or move without needing manual increment/decrement.
+     * Live folder list with document count.
+     *
+     * Uses @RawQuery to ensure Room's invalidation tracker monitors BOTH
+     * the `folders` and `documents` tables. With a plain @Query containing
+     * a subquery on `documents`, Room sometimes misses invalidation when
+     * documents are moved/deleted/merged via raw UPDATE statements.
+     *
+     * observedEntities forces Room to re-emit when either table changes.
      */
-    @Query("""
-        SELECT f.*,
-               (SELECT COUNT(*) FROM documents d WHERE d.folderId = f.id) AS documentCount
-        FROM folders f
-        ORDER BY f.sortOrder ASC, f.createdAt ASC
-    """)
-    fun getAllFolders(): Flow<List<FolderEntity>>
+    @RawQuery(observedEntities = [FolderEntity::class, com.example.docscanner.data.local.entity.DocumentEntity::class])
+    fun getAllFoldersRaw(query: SupportSQLiteQuery): Flow<List<FolderEntity>>
+
+    fun getAllFolders(): Flow<List<FolderEntity>> = getAllFoldersRaw(
+        SimpleSQLiteQuery("""
+            SELECT f.*,
+                   (SELECT COUNT(*) FROM documents d WHERE d.folderId = f.id AND d.isMergedSource = 0) AS documentCount
+            FROM folders f
+            ORDER BY f.sortOrder ASC, f.createdAt ASC
+        """)
+    )
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertFolder(folder: FolderEntity)

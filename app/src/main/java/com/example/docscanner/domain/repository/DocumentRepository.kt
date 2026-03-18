@@ -24,6 +24,9 @@ class DocumentRepository @Inject constructor(
             entities.map { it.toDomain() }
         }
 
+    suspend fun getDocumentsByIds(documentIds: List<String>): List<Document> =
+        documentDao.getDocumentsByIds(documentIds).map { it.toDomain() }
+
     suspend fun saveDocument(document: Document) {
         documentDao.insertDocument(document.toEntity())
     }
@@ -37,28 +40,52 @@ class DocumentRepository @Inject constructor(
         if (doc.folderId == targetFolderId) return
         documentDao.updateDocumentFolder(documentId, targetFolderId)
     }
+
+    suspend fun renameDocument(documentId: String, newName: String) {
+        documentDao.renameDocument(documentId, newName)
+    }
+
+    suspend fun updateDocClassLabel(documentId: String, label: String) {
+        documentDao.updateDocClassLabel(documentId, label)
+    }
+
+    suspend fun updateClassification(documentId: String, label: String) {
+        documentDao.updateClassification(documentId, label)
+    }
+
+    suspend fun markAsMergedSources(documentIds: List<String>) {
+        documentDao.markAsMergedSources(documentIds)
+    }
+
+    suspend fun restoreMergedSources(documentIds: List<String>) {
+        documentDao.restoreMergedSources(documentIds)
+    }
 }
 
 // ── Mappers ───────────────────────────────────────────────────────────────────
 
 fun DocumentEntity.toDomain() = Document(
-    id            = id,
-    folderId      = folderId,
-    name          = name,
-    pageCount     = pageCount,
-    thumbnailPath = thumbnailPath,
-    pdfPath       = pdfPath,
-    docClassLabel = docClassLabel,
-    createdAt     = createdAt
+    id                    = id,
+    folderId              = folderId,
+    name                  = name,
+    pageCount             = pageCount,
+    thumbnailPath         = thumbnailPath,
+    pdfPath               = pdfPath,
+    docClassLabel         = docClassLabel,
+    createdAt             = createdAt,
+    mergedFromDocumentIds = mergedFromDocumentIds,
+    isMergedSource        = isMergedSource
 )
 
 fun Document.toEntity() = DocumentEntity(
-    id            = id,
-    folderId      = folderId,
-    name          = name,
-    pageCount     = pageCount,
-    thumbnailPath = thumbnailPath,
-    pdfPath       = pdfPath,
-    docClassLabel = docClassLabel,
-    createdAt     = createdAt
+    id                    = id,
+    folderId              = folderId,
+    name                  = name,
+    pageCount             = pageCount,
+    thumbnailPath         = thumbnailPath,
+    pdfPath               = pdfPath,
+    docClassLabel         = docClassLabel,
+    createdAt             = createdAt,
+    mergedFromDocumentIds = mergedFromDocumentIds,
+    isMergedSource        = isMergedSource
 )

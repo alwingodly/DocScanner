@@ -1,0 +1,6 @@
+aadhaar_back
+aadhaar_front
+pan_card
+passport
+unknown
+voter_id

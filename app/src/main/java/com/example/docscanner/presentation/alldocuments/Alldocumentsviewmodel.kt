@@ -31,4 +31,22 @@ class AllDocumentsViewModel @Inject constructor(
             documentRepository.deleteDocument(document)
         }
     }
+
+    fun renameDocument(document: Document, newName: String) {
+        viewModelScope.launch {
+            documentRepository.renameDocument(document.id, newName)
+        }
+    }
+
+    fun changeDocumentType(document: Document, newLabel: String) {
+        viewModelScope.launch {
+            documentRepository.updateDocClassLabel(document.id, newLabel)
+        }
+    }
+
+    fun updateClassification(document: Document, label: String) {
+        viewModelScope.launch {
+            documentRepository.updateClassification(document.id, label)
+        }
+    }
 }
