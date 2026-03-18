@@ -183,7 +183,7 @@ private val SelectBlue = Color(0xFF2E6BE6)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChangeTypeBottomSheet(currentLabel: String?, onSelect: (String) -> Unit, onDismiss: () -> Unit) {
-    val types = listOf(DocClassType.AADHAAR, DocClassType.PAN, DocClassType.VOTER_ID, DocClassType.DRIVING_LICENSE, DocClassType.PASSPORT, DocClassType.OTHER)
+    val types = listOf(DocClassType.AADHAAR, DocClassType.PAN, DocClassType.VOTER_ID, DocClassType.PASSPORT, DocClassType.OTHER)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = BgCard, dragHandle = { Box(Modifier.padding(top = 10.dp, bottom = 4.dp).size(width = 36.dp, height = 3.dp).clip(RoundedCornerShape(2.dp)).background(StrokeMid)) }) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 36.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Change Type", color = Ink, fontWeight = FontWeight.Bold, fontSize = 18.sp); Text("Select the correct document type", color = InkMid, fontSize = 13.sp); Spacer(Modifier.height(10.dp))
