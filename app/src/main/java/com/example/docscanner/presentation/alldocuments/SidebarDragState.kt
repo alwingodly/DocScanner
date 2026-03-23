@@ -34,6 +34,16 @@ class SidebarDragState {
     var draggingPageCount by mutableStateOf(0)
         private set
 
+    // ── Group drag fields ─────────────────────────────────────────────────────
+    /** Non-null when dragging an entire classification group */
+    var draggingGroupLabel by mutableStateOf<String?>(null)
+        private set
+
+    var draggingGroupCount by mutableStateOf(0)
+        private set
+
+    val isGroupDrag: Boolean get() = draggingGroupLabel != null
+
     // Hovered folder
     var hoveredFolderId by mutableStateOf<String?>(null)
         private set
@@ -44,11 +54,9 @@ class SidebarDragState {
         folderBounds[folderId] = Pair(top, bottom)
     }
 
-    // Delete zone
     var isOverDeleteZone by mutableStateOf(false)
         private set
 
-    // Exact window-space bounds of the rendered DragDeleteZone widget
     var deleteZoneLeft   by mutableStateOf(0f)
     var deleteZoneTop    by mutableStateOf(Float.MAX_VALUE)
     var deleteZoneRight  by mutableStateOf(Float.MAX_VALUE)
@@ -56,14 +64,9 @@ class SidebarDragState {
 
     var sidebarRightEdge by mutableStateOf(Float.MAX_VALUE)
 
-    fun onDragStart(
-        documentId   : String,
-        windowStartX : Float,
-        windowStartY : Float,
-        thumbnailPath: String?,
-        documentName : String,
-        pageCount    : Int
-    ) {
+    // ── Single document drag ──────────────────────────────────────────────────
+
+    fun onDragStart(documentId: String, windowStartX: Float, windowStartY: Float, thumbnailPath: String?, documentName: String, pageCount: Int) {
         isDragging            = true
         draggingDocumentId    = documentId
         startX                = windowStartX
@@ -75,6 +78,26 @@ class SidebarDragState {
         draggingThumbnailPath = thumbnailPath
         draggingDocumentName  = documentName
         draggingPageCount     = pageCount
+        draggingGroupLabel    = null
+        draggingGroupCount    = 0
+    }
+
+    // ── Group drag ────────────────────────────────────────────────────────────
+
+    fun onGroupDragStart(groupLabel: String, groupCount: Int, windowStartX: Float, windowStartY: Float, thumbnailPath: String?) {
+        isDragging            = true
+        draggingDocumentId    = null
+        startX                = windowStartX
+        startY                = windowStartY
+        dragOffsetX           = 0f
+        dragOffsetY           = 0f
+        hoveredFolderId       = null
+        isOverDeleteZone      = false
+        draggingThumbnailPath = thumbnailPath
+        draggingDocumentName  = "$groupLabel ($groupCount)"
+        draggingPageCount     = groupCount
+        draggingGroupLabel    = groupLabel
+        draggingGroupCount    = groupCount
     }
 
     fun onDrag(dx: Float, dy: Float) {
@@ -99,24 +122,14 @@ class SidebarDragState {
         val currentX = startX + dragOffsetX
         val currentY = startY + dragOffsetY
 
-        // Only active when pointer is physically inside the rendered widget bounds
         isOverDeleteZone = deleteZoneTop < Float.MAX_VALUE &&
                 currentX in deleteZoneLeft..deleteZoneRight &&
                 currentY in deleteZoneTop..deleteZoneBottom
 
-        if (isOverDeleteZone) {
-            hoveredFolderId = null
-            return
-        }
+        if (isOverDeleteZone) { hoveredFolderId = null; return }
+        if (sidebarRightEdge < Float.MAX_VALUE && currentX > sidebarRightEdge) { hoveredFolderId = null; return }
 
-        if (sidebarRightEdge < Float.MAX_VALUE && currentX > sidebarRightEdge) {
-            hoveredFolderId = null
-            return
-        }
-
-        hoveredFolderId = folderBounds.entries
-            .firstOrNull { (_, b) -> currentY in b.first..b.second }
-            ?.key
+        hoveredFolderId = folderBounds.entries.firstOrNull { (_, b) -> currentY in b.first..b.second }?.key
     }
 
     private fun reset() {
@@ -129,5 +142,7 @@ class SidebarDragState {
         draggingThumbnailPath = null
         draggingDocumentName  = ""
         draggingPageCount     = 0
+        draggingGroupLabel    = null
+        draggingGroupCount    = 0
     }
 }

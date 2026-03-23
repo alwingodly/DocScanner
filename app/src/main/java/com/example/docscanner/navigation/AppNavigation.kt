@@ -40,44 +40,74 @@ private val mainLayoutRoutes = setOf(Screen.AllDocuments.route, Screen.FolderDet
 @SuppressLint("ComposableDestinationInComposeScope")
 @Composable
 fun DocScannerNavHost(navController: NavHostController = rememberNavController()) {
-    val scannerViewModel: ScannerViewModel = hiltViewModel(); val homeViewModel: HomeViewModel = hiltViewModel(); val allDocsViewModel: AllDocumentsViewModel = hiltViewModel(); val mergeViewModel: MergeViewModel = hiltViewModel()
-    val state by scannerViewModel.state.collectAsState(); val mergeState by mergeViewModel.state.collectAsState(); val folders by homeViewModel.folders.collectAsState()
-    val dragState = remember { SidebarDragState() }; var selectedTab by rememberSaveable { mutableStateOf(BottomTab.ALL_DOCS) }; var viewingDocument by remember { mutableStateOf<Document?>(null) }
+    val scannerViewModel: ScannerViewModel = hiltViewModel()
+    val homeViewModel: HomeViewModel = hiltViewModel()
+    val allDocsViewModel: AllDocumentsViewModel = hiltViewModel()
+    val mergeViewModel: MergeViewModel = hiltViewModel()
 
-    // ── Centralized select state ──────────────────────────────────────────────
+    val state by scannerViewModel.state.collectAsState()
+    val mergeState by mergeViewModel.state.collectAsState()
+    val folders by homeViewModel.folders.collectAsState()
+
+    val dragState = remember { SidebarDragState() }
+    var selectedTab by rememberSaveable { mutableStateOf(BottomTab.ALL_DOCS) }
+    var viewingDocument by remember { mutableStateOf<Document?>(null) }
+
+    // ── Centralized modes ─────────────────────────────────────────────────────
     var isSelectMode by remember { mutableStateOf(false) }
+    var isOrganizeMode by remember { mutableStateOf(false) }
     var selectedCount by remember { mutableIntStateOf(0) }
     var docCount by remember { mutableIntStateOf(0) }
     var selectAllTrigger by remember { mutableIntStateOf(0) }
 
-    val navBackStackEntry by navController.currentBackStackEntryAsState(); val currentRoute = navBackStackEntry?.destination?.route
-    // Exit select mode when navigating to non-content screens
-    LaunchedEffect(currentRoute) { if (currentRoute != Screen.AllDocuments.route && currentRoute?.startsWith("folder/") != true) { isSelectMode = false } }
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
 
-    LaunchedEffect(state.saveSuccess) { if (state.saveSuccess) { val tid = state.targetFolderId; scannerViewModel.onSaveNavigated(); scannerViewModel.onReset(); if (tid.isNotEmpty()) navController.popBackStack(Screen.FolderDetail.route, inclusive = false) else { navController.popBackStack(Screen.AllDocuments.route, inclusive = false); selectedTab = BottomTab.ALL_DOCS } } }
+    // Exit select mode when navigating away (selection state is lost)
+    // Keep organize mode — user should return to organized view after viewing a document
+    LaunchedEffect(currentRoute) {
+        if (currentRoute != Screen.AllDocuments.route && currentRoute?.startsWith("folder/") != true) {
+            isSelectMode = false
+        }
+    }
+
+    // Select and organize are mutually exclusive
+    fun toggleSelect() {
+        isSelectMode = !isSelectMode
+        if (isSelectMode) isOrganizeMode = false
+    }
+    fun toggleOrganize() {
+        isOrganizeMode = !isOrganizeMode
+        if (isOrganizeMode) isSelectMode = false
+        if (!isOrganizeMode) allDocsViewModel.clearOrganize()
+    }
+
+    LaunchedEffect(state.saveSuccess) {
+        if (state.saveSuccess) { val tid = state.targetFolderId; scannerViewModel.onSaveNavigated(); scannerViewModel.onReset(); if (tid.isNotEmpty()) navController.popBackStack(Screen.FolderDetail.route, inclusive = false) else { navController.popBackStack(Screen.AllDocuments.route, inclusive = false); selectedTab = BottomTab.ALL_DOCS } }
+    }
     LaunchedEffect(mergeState.mergeSuccess) { if (mergeState.mergeSuccess) { mergeViewModel.onMergeNavigated(); navController.popBackStack() } }
 
     val selectedSidebarId = remember(currentRoute, navBackStackEntry) { when { currentRoute?.startsWith("folder/") == true -> navBackStackEntry?.arguments?.getString("folderId") ?: ALL_DOCUMENTS_ID; else -> ALL_DOCUMENTS_ID } }
-
     fun navigateToViewer(doc: Document) { val type = if (doc.pdfPath != null) DocumentType.PDF else DocumentType.IMAGE; val uri = doc.pdfPath ?: doc.thumbnailPath ?: return; viewingDocument = doc; navController.navigate(Screen.Viewer.createRoute(doc.name, type, uri)) }
 
     if (currentRoute in mainLayoutRoutes) {
         MainLayout(
             folders = folders, selectedSidebarId = selectedSidebarId, dragState = dragState,
-            onAllDocumentsSelected = { selectedTab = BottomTab.ALL_DOCS; isSelectMode = false; navController.navigate(Screen.AllDocuments.route) { popUpTo(Screen.AllDocuments.route) { inclusive = true }; launchSingleTop = true } },
-            onFolderSelected = { folder -> isSelectMode = false; navController.navigate(Screen.FolderDetail.createRoute(folder.id, folder.name, folder.icon, folder.exportType)) { launchSingleTop = true } },
+            onAllDocumentsSelected = { selectedTab = BottomTab.ALL_DOCS; isSelectMode = false; isOrganizeMode = false; navController.navigate(Screen.AllDocuments.route) { popUpTo(Screen.AllDocuments.route) { inclusive = true }; launchSingleTop = true } },
+            onFolderSelected = { folder -> isSelectMode = false; isOrganizeMode = false; navController.navigate(Screen.FolderDetail.createRoute(folder.id, folder.name, folder.icon, folder.exportType)) { launchSingleTop = true } },
             onDropToFolder = { documentId, folderId -> allDocsViewModel.moveDocumentToFolder(documentId, folderId) },
             onFolderReorder = { from, to -> homeViewModel.reorderFolder(from, to) },
             selectedTab = selectedTab,
-            onTabSelected = { tab -> selectedTab = tab; isSelectMode = false; when (tab) { BottomTab.ALL_DOCS -> navController.navigate(Screen.AllDocuments.route) { popUpTo(Screen.AllDocuments.route) { inclusive = true }; launchSingleTop = true }; BottomTab.PROFILE -> navController.navigate(Screen.Profile.route) { launchSingleTop = true } } },
+            onTabSelected = { tab -> selectedTab = tab; isSelectMode = false; isOrganizeMode = false; when (tab) { BottomTab.ALL_DOCS -> navController.navigate(Screen.AllDocuments.route) { popUpTo(Screen.AllDocuments.route) { inclusive = true }; launchSingleTop = true }; BottomTab.PROFILE -> navController.navigate(Screen.Profile.route) { launchSingleTop = true } } },
             isSelectMode = isSelectMode, selectedCount = selectedCount, hasDocuments = docCount > 0,
-            onSelectToggle = { isSelectMode = !isSelectMode },
-            onSelectAll = { selectAllTrigger++ }
+            isOrganizeMode = isOrganizeMode,
+            onSelectToggle = ::toggleSelect, onSelectAll = { selectAllTrigger++ },
+            onOrganizeToggle = ::toggleOrganize
         ) {
-            AppNavHost(navController, scannerViewModel, allDocsViewModel, mergeViewModel, dragState, isSelectMode, selectAllTrigger, { isSelectMode = !isSelectMode }, { selectedCount = it }, { docCount = it }, ::navigateToViewer, viewingDocument)
+            AppNavHost(navController, scannerViewModel, allDocsViewModel, mergeViewModel, dragState, isSelectMode, isOrganizeMode, selectAllTrigger, ::toggleSelect, ::toggleOrganize, { selectedCount = it }, { docCount = it }, ::navigateToViewer, viewingDocument)
         }
     } else {
-        AppNavHost(navController, scannerViewModel, allDocsViewModel, mergeViewModel, dragState, isSelectMode, selectAllTrigger, { isSelectMode = !isSelectMode }, { selectedCount = it }, { docCount = it }, ::navigateToViewer, viewingDocument)
+        AppNavHost(navController, scannerViewModel, allDocsViewModel, mergeViewModel, dragState, isSelectMode, isOrganizeMode, selectAllTrigger, ::toggleSelect, ::toggleOrganize, { selectedCount = it }, { docCount = it }, ::navigateToViewer, viewingDocument)
     }
 }
 
@@ -85,14 +115,24 @@ fun DocScannerNavHost(navController: NavHostController = rememberNavController()
 @Composable
 private fun AppNavHost(
     navController: NavHostController, scannerViewModel: ScannerViewModel, allDocsViewModel: AllDocumentsViewModel, mergeViewModel: MergeViewModel, dragState: SidebarDragState,
-    isSelectMode: Boolean, selectAllTrigger: Int, onSelectToggle: () -> Unit, onSelectedCountChanged: (Int) -> Unit, onDocCountChanged: (Int) -> Unit,
+    isSelectMode: Boolean, isOrganizeMode: Boolean, selectAllTrigger: Int,
+    onSelectToggle: () -> Unit, onOrganizeToggle: () -> Unit,
+    onSelectedCountChanged: (Int) -> Unit, onDocCountChanged: (Int) -> Unit,
     navigateToViewer: (Document) -> Unit, viewingDocument: Document?
 ) {
     val state by scannerViewModel.state.collectAsState(); val mergeState by mergeViewModel.state.collectAsState()
+
     NavHost(navController = navController, startDestination = Screen.AllDocuments.route) {
 
         composable(Screen.AllDocuments.route) {
-            AllDocumentsScreen(dragState = dragState, isSelectMode = isSelectMode, selectAllTrigger = selectAllTrigger, onSelectToggle = onSelectToggle, onDocumentClick = { navigateToViewer(it) }, onScanClick = { scannerViewModel.onReset(); navController.navigate(Screen.Camera.route) }, onSelectedCountChanged = onSelectedCountChanged, onDocumentCountChanged = onDocCountChanged, viewModel = allDocsViewModel)
+            AllDocumentsScreen(
+                dragState = dragState, isSelectMode = isSelectMode, isOrganizeMode = isOrganizeMode,
+                selectAllTrigger = selectAllTrigger, onSelectToggle = onSelectToggle, onOrganizeToggle = onOrganizeToggle,
+                onDocumentClick = { navigateToViewer(it) },
+                onScanClick = { scannerViewModel.onReset(); navController.navigate(Screen.Camera.route) },
+                onSelectedCountChanged = onSelectedCountChanged, onDocumentCountChanged = onDocCountChanged,
+                viewModel = allDocsViewModel
+            )
         }
 
         composable(route = Screen.FolderDetail.route, arguments = listOf(navArgument("folderId") { type = NavType.StringType }, navArgument("folderName") { type = NavType.StringType }, navArgument("folderIcon") { type = NavType.StringType }, navArgument("exportType") { type = NavType.StringType })) { back ->

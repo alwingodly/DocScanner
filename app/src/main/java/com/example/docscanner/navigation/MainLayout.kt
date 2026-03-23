@@ -54,6 +54,16 @@ const val ALL_DOCUMENTS_ID = "__all__"
 
 enum class BottomTab { ALL_DOCS, PROFILE }
 
+private val AiPurple = Color(0xFF7C3AED)
+private val TypeColors = mapOf(
+    "Aadhaar" to Color(0xFF2E6BE6),
+    "PAN Card" to Color(0xFFE6A23C),
+    "Passport" to Color(0xFF9B59B6),
+    "Voter ID" to Color(0xFF27AE60),
+    "DL" to Color(0xFFE74C3C),
+    "Document" to Color(0xFF6B6878)
+)
+
 @Composable
 fun MainLayout(
     folders: List<Folder>, selectedSidebarId: String, dragState: SidebarDragState,
@@ -61,13 +71,19 @@ fun MainLayout(
     onDropToFolder: (String, String) -> Unit, onFolderReorder: (Int, Int) -> Unit = { _, _ -> },
     selectedTab: BottomTab, onTabSelected: (BottomTab) -> Unit,
     isSelectMode: Boolean = false, selectedCount: Int = 0, hasDocuments: Boolean = false,
+    isOrganizeMode: Boolean = false,
     onSelectToggle: () -> Unit = {}, onSelectAll: () -> Unit = {},
+    onOrganizeToggle: () -> Unit = {},
     content: @Composable BoxScope.() -> Unit
 ) {
     val density = LocalDensity.current
-    // Show select icon on AllDocs or FolderDetail (not Profile)
-    val showSelectIcon =
-        (selectedTab == BottomTab.ALL_DOCS || selectedSidebarId != ALL_DOCUMENTS_ID) && hasDocuments
+    val showHeaderActions = selectedTab == BottomTab.ALL_DOCS && hasDocuments
+    val showAiOrganize = showHeaderActions && selectedSidebarId == ALL_DOCUMENTS_ID
+
+    // Header mode: 0 = normal, 1 = select, 2 = organize
+    val headerMode = when {
+        isSelectMode -> 1; isOrganizeMode -> 2; else -> 0
+    }
 
     Box(Modifier
         .fillMaxSize()
@@ -77,7 +93,7 @@ fun MainLayout(
                 Modifier
                     .fillMaxWidth()
                     .windowInsetsTopHeight(WindowInsets.statusBars)
-                    .background(BgBase)
+                    .background(Coral)
             )
 
             // ── Header ────────────────────────────────────────────────────────
@@ -85,90 +101,141 @@ fun MainLayout(
                 .fillMaxWidth()
                 .background(BgBase)) {
                 AnimatedContent(
-                    targetState = isSelectMode,
+                    targetState = headerMode,
                     transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(150)) },
                     label = "header"
-                ) { selectActive ->
-                    if (selectActive) {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(onClick = { onSelectToggle() }) {
-                                Icon(
-                                    Icons.Default.Close,
-                                    "Cancel",
-                                    tint = Ink,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-                            Spacer(Modifier.width(2.dp))
-                            Text(
-                                "$selectedCount selected",
-                                color = Ink,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Spacer(Modifier.weight(1f))
-                            Box(Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { onSelectAll() }
-                                .padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                Text(
-                                    if (selectedCount > 0) "Deselect all" else "Select all",
-                                    color = Coral,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                    } else {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
+                ) { mode ->
+                    when (mode) {
+                        1 -> {
+                            // Select mode header
+                            Row(
                                 Modifier
-                                    .size(30.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        Brush.linearGradient(
-                                            listOf(
-                                                Coral,
-                                                Color(0xFFD94860)
-                                            )
-                                        )
-                                    ),
-                                contentAlignment = Alignment.Center
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    Icons.Default.DocumentScanner,
-                                    null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(17.dp)
-                                )
-                            }
-                            Spacer(Modifier.width(10.dp))
-                            Text(
-                                "DocScanner",
-                                color = Ink,
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.2.sp
-                            )
-                            Spacer(Modifier.weight(1f))
-                            if (showSelectIcon) {
                                 IconButton(onClick = { onSelectToggle() }) {
                                     Icon(
-                                        Icons.Default.CheckCircleOutline,
-                                        "Select",
-                                        tint = InkMid,
+                                        Icons.Default.Close,
+                                        "Cancel",
+                                        tint = Ink,
                                         modifier = Modifier.size(22.dp)
                                     )
+                                }
+                                Spacer(Modifier.width(2.dp))
+                                Text(
+                                    "$selectedCount selected",
+                                    color = Ink,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Box(
+                                    Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { onSelectAll() }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        if (selectedCount > 0) "Deselect all" else "Select all",
+                                        color = Coral,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+
+                        2 -> {
+                            // Organize mode header
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(onClick = { onOrganizeToggle() }) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        "Exit organize",
+                                        tint = Ink,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Spacer(Modifier.width(2.dp))
+                                Icon(
+                                    Icons.Default.AutoAwesome,
+                                    null,
+                                    tint = AiPurple,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    "AI Organize",
+                                    color = AiPurple,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(Modifier.weight(1f))
+                            }
+                        }
+
+                        else -> {
+                            // Normal header
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    Modifier
+                                        .size(30.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            Brush.linearGradient(
+                                                listOf(
+                                                    Coral,
+                                                    Color(0xFFD94860)
+                                                )
+                                            )
+                                        ), contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.DocumentScanner,
+                                        null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    "DocScanner",
+                                    color = Ink,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.2.sp
+                                )
+                                Spacer(Modifier.weight(1f))
+                                if (showHeaderActions) {
+                                    if (showAiOrganize) {
+                                        IconButton(onClick = { onOrganizeToggle() }) {
+                                            Icon(
+                                                Icons.Default.AutoAwesome,
+                                                "AI Organize",
+                                                tint = AiPurple,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+                                    IconButton(onClick = { onSelectToggle() }) {
+                                        Icon(
+                                            Icons.Default.CheckCircleOutline,
+                                            "Select",
+                                            tint = InkMid,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -213,14 +280,18 @@ fun MainLayout(
             BottomNavBar(selectedTab = selectedTab, onTabSelected = onTabSelected)
         }
 
-        // ── Ghost drag card ──────────────────────────────────────────────────
+        // Ghost drag card
         if (dragState.isDragging) {
-            val ghostW = 90.dp;
-            val ghostH = 120.dp;
+            val isGroup = dragState.isGroupDrag
+            val ghostW = if (isGroup) 110.dp else 90.dp;
+            val ghostH = if (isGroup) 70.dp else 120.dp
             val ghostWx = with(density) { ghostW.toPx() }
-            val offsetX = (dragState.startX + dragState.dragOffsetX - ghostWx / 2f).roundToInt();
+            val offsetX = (dragState.startX + dragState.dragOffsetX - ghostWx / 2f).roundToInt()
             val offsetY =
                 (dragState.startY + dragState.dragOffsetY - with(density) { ghostH.toPx() } / 2f).roundToInt()
+            val groupColor =
+                if (isGroup) (TypeColors[dragState.draggingGroupLabel] ?: Coral) else Coral
+
             Box(
                 Modifier
                     .offset { IntOffset(offsetX, offsetY) }
@@ -229,72 +300,103 @@ fun MainLayout(
                     .graphicsLayer {
                         scaleX = 1.08f; scaleY = 1.08f; shadowElevation = 32f; alpha = 0.96f
                     }
-                    .shadow(
-                        16.dp,
-                        RoundedCornerShape(14.dp),
-                        ambientColor = Color(0x22E8603C),
-                        spotColor = Color(0x22E8603C)
-                    )
+                    .shadow(16.dp, RoundedCornerShape(14.dp), ambientColor = Color(0x22000000))
                     .clip(RoundedCornerShape(14.dp))
-                    .border(1.5.dp, Coral.copy(0.6f), RoundedCornerShape(14.dp))
+                    .border(1.5.dp, groupColor.copy(0.6f), RoundedCornerShape(14.dp))
                     .background(BgCard)
             ) {
-                if (dragState.draggingThumbnailPath != null) AsyncImage(
-                    model = dragState.draggingThumbnailPath,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                ) else Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(BgSurface),
-                    contentAlignment = Alignment.Center
-                ) { Icon(Icons.Default.Image, null, Modifier.size(28.dp), tint = InkDim) }
-                Box(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color.Transparent,
-                                    Color(0xEEFFFFFF)
+                if (isGroup) {
+                    // Group ghost — shows label + count
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .background(groupColor.copy(0.08f))
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Box(Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(groupColor))
+                            Text(
+                                dragState.draggingGroupLabel ?: "",
+                                color = groupColor,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "${dragState.draggingGroupCount} docs → folder",
+                            color = groupColor.copy(0.7f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                } else {
+                    // Single doc ghost
+                    if (dragState.draggingThumbnailPath != null) AsyncImage(
+                        model = dragState.draggingThumbnailPath,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    ) else Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(BgSurface),
+                        contentAlignment = Alignment.Center
+                    ) { Icon(Icons.Default.Image, null, Modifier.size(28.dp), tint = InkDim) }
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color.Transparent,
+                                        Color(0xEEFFFFFF)
+                                    )
                                 )
                             )
+                            .padding(horizontal = 5.dp, vertical = 5.dp)
+                    ) {
+                        Text(
+                            dragState.draggingDocumentName,
+                            color = Ink,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
                         )
-                        .padding(horizontal = 5.dp, vertical = 5.dp)
-                ) {
-                    Text(
-                        dragState.draggingDocumentName,
-                        color = Ink,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(4.dp)
-                        .clip(RoundedCornerShape(5.dp))
-                        .background(Coral)
-                        .padding(horizontal = 5.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        "← folder",
-                        color = Color.White,
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    }
+                    Box(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(4.dp)
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(Coral)
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            "← folder",
+                            color = Color.White,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-// ── Sidebar ──────────────────────────────────────────────────────────────────
+// ── Sidebar (unchanged) ──────────────────────────────────────────────────────
 
 @Composable
 private fun SidebarPanel(

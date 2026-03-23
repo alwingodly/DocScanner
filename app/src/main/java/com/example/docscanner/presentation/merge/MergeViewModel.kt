@@ -42,7 +42,8 @@ data class MergeState(
 class MergeViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val exporter: DocumentExporter,
-    private val documentRepository: DocumentRepository
+    private val documentRepository: DocumentRepository,
+    private val ocrHelper: com.example.docscanner.data.ocr.MlKitOcrHelper
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(MergeState())
@@ -106,7 +107,24 @@ class MergeViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val timestamp = System.currentTimeMillis()
-                val fileName = "PDF_${currentState.categoryLabel}_$timestamp"
+
+                // OCR first page for smart naming
+                val firstBitmap = items.first().bitmap!!
+                val docType =
+                    com.example.docscanner.domain.model.DocClassType.entries.find { it.displayName == currentState.categoryLabel }
+                        ?: com.example.docscanner.domain.model.DocClassType.OTHER
+                val ocrName = try {
+                    val fields = ocrHelper.extractFields(firstBitmap, docType)
+                    val parts = mutableListOf<String>()
+                    fields.name?.let { parts.add(it) }
+                    parts.add(currentState.categoryLabel.replace(" ", "_"))
+                    fields.idNumber?.let { parts.add(it.replace("\\s".toRegex(), "").takeLast(6)) }
+                    if (parts.size > 1) parts.joinToString("_") else null
+                } catch (_: Exception) {
+                    null
+                }
+
+                val fileName = ocrName ?: "PDF_${currentState.categoryLabel}_$timestamp"
 
                 // Convert to ScannedPages for the exporter
                 val pages = items.mapNotNull { item ->
