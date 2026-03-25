@@ -81,7 +81,7 @@ dependencies {
     // ── TensorFlow Lite (document classification) ──
     implementation("org.tensorflow:tensorflow-lite:2.17.0")
     implementation("org.tensorflow:tensorflow-lite-support:0.5.0")
-
+    implementation("com.google.mlkit:barcode-scanning:17.2.0")
     // ── Hilt DI ──
     implementation(libs.hilt.android)
     kapt(libs.hilt.android.compiler)

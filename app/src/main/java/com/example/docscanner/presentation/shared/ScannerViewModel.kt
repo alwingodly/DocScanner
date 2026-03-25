@@ -39,7 +39,12 @@ class ScannerViewModel @Inject constructor(
     val state: StateFlow<ScannerState> = _state.asStateFlow()
 
     override fun onCleared() {
-        super.onCleared(); documentClassifier.close()
+        super.onCleared()
+        documentClassifier.close()
+    }
+
+    fun setSessionId(sessionId: String?) {
+        _state.value = _state.value.copy(sessionId = sessionId)
     }
 
     fun setTargetFolder(folderId: String, folderName: String, exportType: FolderExportType) {
@@ -111,20 +116,22 @@ class ScannerViewModel @Inject constructor(
                         DocClassType.AADHAAR -> try {
                             aadhaarMasker.mask(originalBitmap)
                         } catch (e: Exception) {
-                            Log.e("ScannerVM", "Aadhaar masking failed", e); originalBitmap
+                            Log.e("ScannerVM", "Aadhaar masking failed", e)
+                            originalBitmap
                         }
                         DocClassType.PAN -> try {
                             panMasker.mask(originalBitmap)
                         } catch (e: Exception) {
-                            Log.e("ScannerVM", "PAN masking failed", e); originalBitmap
+                            Log.e("ScannerVM", "PAN masking failed", e)
+                            originalBitmap
                         }
                         else -> originalBitmap
                     }
 
-
                     val timestamp = System.currentTimeMillis()
                     val name = smartName
-                        ?: if (currentState.pages.size == 1) "Scan_$timestamp" else "Scan_${timestamp}_p${index + 1}"
+                        ?: if (currentState.pages.size == 1) "Scan_$timestamp"
+                        else "Scan_${timestamp}_p${index + 1}"
 
                     val imageUri = exporter.exportAsImage(
                         page.copy(enhancedBitmap = saveBitmap),
@@ -134,19 +141,21 @@ class ScannerViewModel @Inject constructor(
 
                     documentRepository.saveDocument(
                         Document(
-                            folderId = currentState.targetFolderId,
-                            name = name,
-                            pageCount = 1,
+                            folderId      = currentState.targetFolderId,
+                            name          = name,
+                            pageCount     = 1,
                             thumbnailPath = imageUri?.toString(),
-                            pdfPath = null,
+                            pdfPath       = null,
                             docClassLabel = docType.displayName,
-                            createdAt = System.currentTimeMillis()
+                            createdAt     = System.currentTimeMillis(),
+                            sessionId     = currentState.sessionId  // ← session-scoped
                         )
                     )
                 }
                 _state.value = _state.value.copy(isSaving = false, saveSuccess = true)
             } catch (e: Exception) {
-                e.printStackTrace(); _state.value = _state.value.copy(isSaving = false)
+                e.printStackTrace()
+                _state.value = _state.value.copy(isSaving = false)
             }
         }
     }
@@ -169,12 +178,16 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun onReset() {
-        _state.value = ScannerState()
+        // ← preserve sessionId so docs after reset still belong to the active session
+        _state.value = ScannerState(sessionId = _state.value.sessionId)
     }
 
     private fun updatePage(pageId: String, transform: (ScannedPage) -> ScannedPage) {
-        _state.value =
-            _state.value.copy(pages = _state.value.pages.map { if (it.id == pageId) transform(it) else it })
+        _state.value = _state.value.copy(
+            pages = _state.value.pages.map {
+                if (it.id == pageId) transform(it) else it
+            }
+        )
     }
 }
 
@@ -184,5 +197,6 @@ data class ScannerState(
     val saveSuccess: Boolean = false,
     val targetFolderId: String = "",
     val targetFolderName: String = "",
-    val targetExportType: FolderExportType = FolderExportType.PDF
+    val targetExportType: FolderExportType = FolderExportType.PDF,
+    val sessionId: String? = null
 )

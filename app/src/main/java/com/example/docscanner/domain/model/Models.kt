@@ -52,27 +52,9 @@ data class Folder(val id: String = System.currentTimeMillis().toString(), val na
 data class Document(
     val id: String = System.currentTimeMillis().toString(), val folderId: String, val name: String, val pageCount: Int,
     val thumbnailPath: String? = null, val pdfPath: String? = null, val docClassLabel: String? = null,
-    val createdAt: Long = System.currentTimeMillis(), val mergedFromDocumentIds: String? = null, val isMergedSource: Boolean = false
+    val createdAt: Long = System.currentTimeMillis(), val mergedFromDocumentIds: String? = null, val isMergedSource: Boolean = false,val sessionId: String? = null
 ) {
     val isMergedPdf: Boolean get() = !mergedFromDocumentIds.isNullOrEmpty()
     val sourceDocumentIds: List<String> get() = mergedFromDocumentIds?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
 }
 
-/**
- * A group of pages that belong to the same logical document.
- * Created by auto-grouping after batch scan.
- */
-data class DocumentGroup(
-    val id: String = System.currentTimeMillis().toString(),
-    val pages: MutableList<ScannedPage>,
-    val docType: DocClassType,
-    val personName: String?,
-    val documentId: String?,
-    val suggestedFileName: String,
-    val userLabel: String? = null
-) {
-    val pageCount: Int get() = pages.size
-    val thumbnail: Bitmap get() = pages.first().displayBitmap
-    val isKnownType: Boolean get() = docType != DocClassType.OTHER
-    val displayName: String get() = userLabel ?: suggestedFileName
-}

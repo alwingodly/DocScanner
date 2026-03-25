@@ -11,5 +11,6 @@ data class FolderEntity(
     val exportType: String = "PDF",
     val createdAt: Long,
     val documentCount: Int = 0,
-    val sortOrder: Int = 0
+    val sortOrder: Int = 0,
+    val sessionId: String? = null   // ← new column
 )

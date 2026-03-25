@@ -14,6 +14,8 @@ class DocumentRepository @Inject constructor(
     private val documentDao: DocumentDao,
     private val folderDao  : FolderDao
 ) {
+    // ── Existing (untouched) ──────────────────────────────────────────────────
+
     fun getDocuments(folderId: String): Flow<List<Document>> =
         documentDao.getDocumentsByFolder(folderId).map { entities ->
             entities.map { it.toDomain() }
@@ -60,6 +62,27 @@ class DocumentRepository @Inject constructor(
     suspend fun restoreMergedSources(documentIds: List<String>) {
         documentDao.restoreMergedSources(documentIds)
     }
+
+    // ── New session-aware methods ─────────────────────────────────────────────
+
+    /** Unfoldered docs scoped to a session — for AllDocumentsScreen */
+    fun getDocumentsForSession(sessionId: String): Flow<List<Document>> =
+        documentDao.getDocumentsForSession(sessionId).map { entities ->
+            entities.map { it.toDomain() }
+        }
+
+    /** Folder docs scoped to a session — for FolderDetailScreen */
+    fun getDocumentsByFolderAndSession(
+        sessionId: String,
+        folderId: String
+    ): Flow<List<Document>> =
+        documentDao.getDocumentsByFolderAndSession(sessionId, folderId).map { entities ->
+            entities.map { it.toDomain() }
+        }
+
+    suspend fun deleteAllDocumentsForSession(sessionId: String) {
+        documentDao.deleteAllDocumentsForSession(sessionId)
+    }
 }
 
 // ── Mappers ───────────────────────────────────────────────────────────────────
@@ -74,7 +97,8 @@ fun DocumentEntity.toDomain() = Document(
     docClassLabel         = docClassLabel,
     createdAt             = createdAt,
     mergedFromDocumentIds = mergedFromDocumentIds,
-    isMergedSource        = isMergedSource
+    isMergedSource        = isMergedSource,
+    sessionId             = sessionId
 )
 
 fun Document.toEntity() = DocumentEntity(
@@ -87,5 +111,6 @@ fun Document.toEntity() = DocumentEntity(
     docClassLabel         = docClassLabel,
     createdAt             = createdAt,
     mergedFromDocumentIds = mergedFromDocumentIds,
-    isMergedSource        = isMergedSource
+    isMergedSource        = isMergedSource,
+    sessionId             = sessionId
 )

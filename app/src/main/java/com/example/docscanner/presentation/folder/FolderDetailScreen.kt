@@ -113,9 +113,11 @@ fun FolderDetailScreen(
     val cardBounds =
         remember { mutableStateMapOf<Int, Pair<Float, Float>>() } // index → (top, bottom) in window
 
-    Box(Modifier
-        .fillMaxSize()
-        .background(BgBase)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(BgBase)
+    ) {
         Column(Modifier.fillMaxSize()) {
             if (!showTopBar) {
                 Row(

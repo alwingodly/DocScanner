@@ -35,7 +35,6 @@ class SidebarDragState {
         private set
 
     // ── Group drag fields ─────────────────────────────────────────────────────
-    /** Non-null when dragging an entire classification group */
     var draggingGroupLabel by mutableStateOf<String?>(null)
         private set
 
@@ -54,6 +53,16 @@ class SidebarDragState {
         folderBounds[folderId] = Pair(top, bottom)
     }
 
+    /**
+     * Call this whenever the live folder list changes.
+     * Removes stale entries for folder IDs that no longer exist, so
+     * recalculateHover() can never return a ghost folder ID.
+     */
+    fun syncFolderIds(validIds: Set<String>) {
+        val stale = folderBounds.keys.filter { it !in validIds }
+        stale.forEach { folderBounds.remove(it) }
+    }
+
     var isOverDeleteZone by mutableStateOf(false)
         private set
 
@@ -66,7 +75,14 @@ class SidebarDragState {
 
     // ── Single document drag ──────────────────────────────────────────────────
 
-    fun onDragStart(documentId: String, windowStartX: Float, windowStartY: Float, thumbnailPath: String?, documentName: String, pageCount: Int) {
+    fun onDragStart(
+        documentId: String,
+        windowStartX: Float,
+        windowStartY: Float,
+        thumbnailPath: String?,
+        documentName: String,
+        pageCount: Int
+    ) {
         isDragging            = true
         draggingDocumentId    = documentId
         startX                = windowStartX
@@ -84,7 +100,13 @@ class SidebarDragState {
 
     // ── Group drag ────────────────────────────────────────────────────────────
 
-    fun onGroupDragStart(groupLabel: String, groupCount: Int, windowStartX: Float, windowStartY: Float, thumbnailPath: String?) {
+    fun onGroupDragStart(
+        groupLabel: String,
+        groupCount: Int,
+        windowStartX: Float,
+        windowStartY: Float,
+        thumbnailPath: String?
+    ) {
         isDragging            = true
         draggingDocumentId    = null
         startX                = windowStartX
@@ -127,9 +149,20 @@ class SidebarDragState {
                 currentY in deleteZoneTop..deleteZoneBottom
 
         if (isOverDeleteZone) { hoveredFolderId = null; return }
-        if (sidebarRightEdge < Float.MAX_VALUE && currentX > sidebarRightEdge) { hoveredFolderId = null; return }
+        if (sidebarRightEdge < Float.MAX_VALUE && currentX > sidebarRightEdge) {
+            hoveredFolderId = null; return
+        }
 
-        hoveredFolderId = folderBounds.entries.firstOrNull { (_, b) -> currentY in b.first..b.second }?.key
+        // Find the folder whose bounds tightly contain currentY.
+        // Use minByOrNull on vertical distance from centre — this is stable
+        // across recompositions and doesn't depend on map iteration order.
+        hoveredFolderId = folderBounds.entries
+            .filter { (_, b) -> currentY in b.first..b.second }
+            .minByOrNull { (_, b) ->
+                val centre = (b.first + b.second) / 2f
+                kotlin.math.abs(currentY - centre)
+            }
+            ?.key
     }
 
     private fun reset() {

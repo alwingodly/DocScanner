@@ -85,6 +85,10 @@ fun MainLayout(
         isSelectMode -> 1; isOrganizeMode -> 2; else -> 0
     }
 
+    LaunchedEffect(folders) {
+        val validIds = (folders.map { it.id } + ALL_DOCUMENTS_ID).toSet()
+        dragState.syncFolderIds(validIds)
+    }
     Box(Modifier
         .fillMaxSize()
         .background(BgBase)) {
@@ -277,7 +281,6 @@ fun MainLayout(
                 .fillMaxWidth()
                 .height(1.dp)
                 .background(StrokeLight))
-            BottomNavBar(selectedTab = selectedTab, onTabSelected = onTabSelected)
         }
 
         // Ghost drag card
@@ -680,71 +683,5 @@ private fun SidebarFolderItem(
     }
 }
 
-@Composable
-fun BottomNavBar(selectedTab: BottomTab, onTabSelected: (BottomTab) -> Unit) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .background(BgBase)
-            .windowInsetsPadding(WindowInsets.navigationBars)
-            .height(60.dp)
-    ) {
-        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            BottomTabItem(
-                Modifier.weight(1f),
-                Icons.Default.Description,
-                "Home",
-                selectedTab == BottomTab.ALL_DOCS
-            ) { onTabSelected(BottomTab.ALL_DOCS) }; BottomTabItem(
-            Modifier.weight(1f),
-            Icons.Default.Person,
-            "Profile",
-            selectedTab == BottomTab.PROFILE
-        ) { onTabSelected(BottomTab.PROFILE) }
-        }
-    }
-}
 
-@Composable
-private fun BottomTabItem(
-    modifier: Modifier,
-    icon: ImageVector,
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    val tint by animateColorAsState(if (selected) Coral else InkMid, tween(200), label = "t");
-    val indA by animateFloatAsState(if (selected) 1f else 0f, tween(250), label = "ind");
-    val scale by animateFloatAsState(
-        if (selected) 1.05f else 1f,
-        spring(stiffness = 600f),
-        label = "sc"
-    ); Column(
-        modifier
-            .fillMaxHeight()
-            .clickable(onClick = onClick)
-            .graphicsLayer { scaleX = scale; scaleY = scale },
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Box(
-            Modifier
-                .width(28.dp)
-                .height(2.5.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(Coral.copy(alpha = indA))
-        ); Spacer(Modifier.height(5.dp)); Icon(
-        icon,
-        label,
-        Modifier.size(21.dp),
-        tint = tint
-    ); Spacer(
-        Modifier.height(2.dp)
-    ); Text(
-        label,
-        color = tint,
-        fontSize = 10.sp,
-        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-    )
-    }
-}
+

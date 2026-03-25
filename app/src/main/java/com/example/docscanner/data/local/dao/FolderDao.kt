@@ -9,16 +9,8 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface FolderDao {
 
-    /**
-     * Live folder list with document count.
-     *
-     * Uses @RawQuery to ensure Room's invalidation tracker monitors BOTH
-     * the `folders` and `documents` tables. With a plain @Query containing
-     * a subquery on `documents`, Room sometimes misses invalidation when
-     * documents are moved/deleted/merged via raw UPDATE statements.
-     *
-     * observedEntities forces Room to re-emit when either table changes.
-     */
+    // ── Existing (untouched) ──────────────────────────────────────────────────
+
     @RawQuery(observedEntities = [FolderEntity::class, com.example.docscanner.data.local.entity.DocumentEntity::class])
     fun getAllFoldersRaw(query: SupportSQLiteQuery): Flow<List<FolderEntity>>
 
@@ -27,6 +19,7 @@ interface FolderDao {
             SELECT f.*,
                    (SELECT COUNT(*) FROM documents d WHERE d.folderId = f.id AND d.isMergedSource = 0) AS documentCount
             FROM folders f
+            WHERE f.sessionId IS NULL
             ORDER BY f.sortOrder ASC, f.createdAt ASC
         """)
     )
@@ -45,4 +38,26 @@ interface FolderDao {
 
     @Delete
     suspend fun deleteFolder(folder: FolderEntity)
+
+    // ── New session-aware queries ─────────────────────────────────────────────
+
+    @RawQuery(observedEntities = [FolderEntity::class, com.example.docscanner.data.local.entity.DocumentEntity::class])
+    fun getFoldersForSessionRaw(query: SupportSQLiteQuery): Flow<List<FolderEntity>>
+
+    fun getFoldersForSession(sessionId: String): Flow<List<FolderEntity>> =
+        getFoldersForSessionRaw(
+            SimpleSQLiteQuery("""
+                SELECT f.*,
+                       (SELECT COUNT(*) FROM documents d WHERE d.folderId = f.id AND d.isMergedSource = 0) AS documentCount
+                FROM folders f
+                WHERE f.sessionId = ?
+                ORDER BY f.sortOrder ASC, f.createdAt ASC
+            """, arrayOf(sessionId))
+        )
+
+    @Query("SELECT COUNT(*) FROM folders WHERE sessionId = :sessionId")
+    suspend fun countFoldersForSession(sessionId: String): Int
+
+    @Query("DELETE FROM folders WHERE sessionId = :sessionId")
+    suspend fun deleteFoldersForSession(sessionId: String)
 }

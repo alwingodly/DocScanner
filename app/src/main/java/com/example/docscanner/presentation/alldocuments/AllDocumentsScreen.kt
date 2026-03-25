@@ -97,7 +97,7 @@ fun AllDocumentsScreen(
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var activeFilter by remember { mutableStateOf(FILTER_ALL) }
-
+    val isLoading by viewModel.isLoading.collectAsState()
     // Bottom sheet state for type change
     var typeChangeDoc by remember { mutableStateOf<Document?>(null) }
     val sheetState = rememberModalBottomSheetState()
@@ -210,26 +210,17 @@ fun AllDocumentsScreen(
 
             Box(Modifier.weight(1f)) {
                 when {
+                    isLoading -> Box(Modifier.fillMaxSize()) // ← blank during switch, no flash
                     documents.isEmpty() -> EmptyState()
                     isOrganizeMode -> OrganizeView(
-                        grouped,
-                        dragState,
-                        viewModel,
-                        context,
-                        onDocumentClick
+                        grouped, dragState, viewModel, context, onDocumentClick
                     ) { typeChangeDoc = it }
-
                     else -> NormalGrid(
                         if (isSelectMode) documents else filteredDocuments,
-                        isSelectMode,
-                        selectedIds,
-                        dragState,
-                        viewModel,
+                        isSelectMode, selectedIds, dragState, viewModel,
                         onDocumentClick,
-                        { id ->
-                            selectedIds =
-                                if (id in selectedIds) selectedIds - id else selectedIds + id
-                        }) { typeChangeDoc = it }
+                        { id -> selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id }
+                    ) { typeChangeDoc = it }
                 }
             }
         }

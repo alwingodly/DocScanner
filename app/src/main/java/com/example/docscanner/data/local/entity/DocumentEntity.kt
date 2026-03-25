@@ -14,10 +14,7 @@ data class DocumentEntity(
     val pdfPath: String?,
     val docClassLabel: String?,
     val createdAt: Long,
-
-    /** Comma-separated IDs of source documents (for merged PDFs) */
     val mergedFromDocumentIds: String? = null,
-
-    /** True if this document is hidden because it was merged into a PDF */
-    val isMergedSource: Boolean = false
+    val isMergedSource: Boolean = false,
+    val sessionId: String? = null   // ← new, null = global doc scanner
 )

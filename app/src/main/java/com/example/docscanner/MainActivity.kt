@@ -5,12 +5,17 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.example.docscanner.data.local.SessionManager
 import com.example.docscanner.navigation.DocScannerNavHost
+import com.example.docscanner.navigation.Screen
 import com.example.docscanner.ui.theme.DocScannerTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject lateinit var sessionManager: SessionManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -26,7 +31,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             DocScannerTheme {
-                DocScannerNavHost()
+                val startDestination = if (sessionManager.isLoggedIn())
+                    Screen.AppHome.route else Screen.Login.route
+                DocScannerNavHost(startDestination = startDestination)   // ← pass down
             }
         }
     }

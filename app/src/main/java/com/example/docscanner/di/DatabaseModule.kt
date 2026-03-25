@@ -6,6 +6,8 @@ import com.example.docscanner.data.classifier.DocumentClassifier
 import com.example.docscanner.data.local.dao.DocumentDao
 import com.example.docscanner.data.local.dao.FolderDao
 import com.example.docscanner.data.local.dao.AppDatabase
+import com.example.docscanner.data.local.dao.ApplicationDocumentDao
+import com.example.docscanner.data.local.dao.ApplicationSessionDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -30,8 +32,18 @@ object DatabaseModule {
     @Provides
     fun provideDocumentDao(db: AppDatabase): DocumentDao = db.documentDao()
 
+
     @Provides
     @Singleton
     fun provideDocumentClassifier(@ApplicationContext context: Context): DocumentClassifier =
         DocumentClassifier(context)
+
+    @Provides
+    fun provideApplicationSessionDao(db: AppDatabase): ApplicationSessionDao =
+        db.applicationSessionDao()
+
+    @Provides
+    fun provideApplicationDocumentDao(db: AppDatabase): ApplicationDocumentDao =
+        db.applicationDocumentDao()
+
 }
