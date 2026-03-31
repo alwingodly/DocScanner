@@ -117,6 +117,9 @@ class DocumentRepository @Inject constructor(
         if (activeGroupIds.isEmpty()) return
         docGroupDao.deleteOrphanedGroups(activeGroupIds)
     }
+
+    suspend fun getGlobalAadhaarDocs(): List<Document> =
+        documentDao.getGlobalAadhaarDocs().map { it.toDomain() }
 }
 
 // ── Mappers ───────────────────────────────────────────────────────────────────

@@ -107,4 +107,17 @@ interface DocumentDao {
 
     @Query("SELECT DISTINCT docGroupId FROM documents WHERE docClassLabel = :docType AND docGroupId IS NOT NULL AND sessionId = :sessionId")
     suspend fun getGroupIdsForType(docType: String, sessionId: String): List<String>
+
+    @Query("""
+    SELECT * FROM documents 
+    WHERE sessionId IS NULL
+    AND (
+        docClassLabel = 'Aadhaar'
+        OR docClassLabel = 'Aadhaar Front' 
+        OR docClassLabel = 'Aadhaar Back'
+    )
+    AND aadhaarGroupId IS NOT NULL
+    AND isMergedSource = 0
+""")
+    suspend fun getGlobalAadhaarDocs(): List<DocumentEntity>
 }

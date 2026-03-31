@@ -94,9 +94,14 @@ class ScannerViewModel @Inject constructor(
             pages = _state.value.pages + ScannedPage(id = pageId, originalBitmap = bitmap)
         )
         val job = viewModelScope.launch {
-            // Restore: detect edges when no corners provided, don't pass raw bitmap to classifier
-            val corners = detectedCorners ?: documentProcessor.detectEdges(bitmap)
-            val cropped = documentProcessor.perspectiveTransform(bitmap, corners)
+            // ML Kit already returns a corrected bitmap.
+            // Only run perspectiveTransform when caller explicitly provides corners
+            // (e.g. manual corner adjustment screen).
+            val cropped = if (detectedCorners != null) {
+                documentProcessor.perspectiveTransform(bitmap, detectedCorners)
+            } else {
+                bitmap  // ← use as-is, no second crop
+            }
 
             val docType = if (_state.value.targetDocType == null) {
                 try { documentClassifier.classify(cropped) } catch (_: Exception) { null }
@@ -104,7 +109,7 @@ class ScannerViewModel @Inject constructor(
 
             updatePage(pageId) {
                 it.copy(
-                    corners        = corners,
+                    corners        = detectedCorners,
                     croppedBitmap  = cropped,
                     enhancedBitmap = cropped,
                     docClassType   = docType
@@ -113,6 +118,7 @@ class ScannerViewModel @Inject constructor(
         }
         synchronized(pendingCropJobs) { pendingCropJobs.add(job) }
     }
+
     fun onAutoSavePages() {
         val currentState = _state.value
         if (currentState.pages.isEmpty()) return
@@ -450,16 +456,19 @@ class ScannerViewModel @Inject constructor(
             null
         }
 
-        Log.d("AadhaarDebug", "resolveGroupId → detected: ${detected.name}")
-        Log.d("AadhaarDebug", "resolveGroupId → fields.name: ${fields?.name}")
-        Log.d("AadhaarDebug", "resolveGroupId → fields.idNumber: ${fields?.idNumber}")
-        Log.d("AadhaarDebug", "resolveGroupId → anchoredGroupId: $anchoredGroupId")
-        Log.d("AadhaarDebug", "resolveGroupId → lastAadhaarGroupId: $lastAadhaarGroupId")
-        Log.d("AadhaarDebug", "resolveGroupId → inBatchDocs.size: ${inBatchDocs.size}")
-
         val ocrDigits = fields?.idNumber?.filter { it.isDigit() }
         val sessionId = _state.value.sessionId
-        val thisSide  = aadhaarSideOf(detected)  // "FRONT" or "BACK"
+        val thisSide  = aadhaarSideOf(detected)
+
+        // Helper — fetches Aadhaar docs regardless of session
+        suspend fun fetchAadhaarDocs(): List<com.example.docscanner.domain.model.Document> =
+            try {
+                if (sessionId != null) documentRepository.getExistingAadhaarDocs(sessionId)
+                else documentRepository.getGlobalAadhaarDocs()   // ← global fallback
+            } catch (e: Exception) {
+                Log.e("AadhaarDebug", "fetchAadhaarDocs failed", e)
+                emptyList()
+            }
 
         // ── 1. Confident OCR (name + number) ─────────────────────────────────
         val confidentKey = if (fields?.name != null && fields.idNumber != null)
@@ -467,65 +476,45 @@ class ScannerViewModel @Inject constructor(
         else null
 
         if (confidentKey != null) {
-            if (sessionId != null) {
-                val existingDocs = try {
-                    documentRepository.getExistingAadhaarDocs(sessionId)
-                } catch (e: Exception) { emptyList() }
+            val existingDocs = fetchAadhaarDocs()   // ← no sessionId gate
 
-                val digits12 = ocrDigits?.takeIf { it.length == 12 }
-                if (digits12 != null) {
-                    val crossMatch = existingDocs
-                        .mapNotNull { it.aadhaarGroupId }
-                        .distinct()
-                        .firstOrNull { gId -> gId != confidentKey && gId.contains(digits12) }
-                    if (crossMatch != null) {
-                        val docsInCross  = existingDocs.filter { it.aadhaarGroupId == crossMatch }
-                        val pairComplete = docsInCross.any { it.aadhaarSide == "FRONT" } &&
-                                docsInCross.any { it.aadhaarSide == "BACK" }
-                        if (!pairComplete) {
-                            anchoredGroupId    = crossMatch
-                            lastAadhaarGroupId = crossMatch
-                            Log.d("AadhaarDebug",
-                                "resolveGroupId → cross-format match: $confidentKey → $crossMatch")
-                            return crossMatch
-                        }
+            val digits12 = ocrDigits?.takeIf { it.length == 12 }
+            if (digits12 != null) {
+                val crossMatch = existingDocs
+                    .mapNotNull { it.aadhaarGroupId }
+                    .distinct()
+                    .firstOrNull { gId -> gId != confidentKey && gId.contains(digits12) }
+                if (crossMatch != null) {
+                    val docsInCross  = existingDocs.filter { it.aadhaarGroupId == crossMatch }
+                    val pairComplete = docsInCross.any { it.aadhaarSide == "FRONT" } &&
+                            docsInCross.any { it.aadhaarSide == "BACK" }
+                    if (!pairComplete) {
+                        anchoredGroupId    = crossMatch
+                        lastAadhaarGroupId = crossMatch
+                        return crossMatch
                     }
-                }
-
-                val docsInGroup     = existingDocs.filter { it.aadhaarGroupId == confidentKey }
-                val hasCompletePair = docsInGroup.any { it.aadhaarSide == "FRONT" } &&
-                        docsInGroup.any { it.aadhaarSide == "BACK" }
-
-                if (hasCompletePair) {
-                    val newKey = "${confidentKey}_${System.currentTimeMillis()}"
-                    if (anchoredGroupId != null && anchoredGroupId != newKey) {
-                        lastAadhaarGroupId = null
-                    }
-                    anchoredGroupId    = newKey
-                    lastAadhaarGroupId = newKey
-                    Log.d("AadhaarDebug", "resolveGroupId → complete pair exists, new group: $newKey")
-                    return newKey
                 }
             }
 
-            if (anchoredGroupId != null && anchoredGroupId != confidentKey) {
-                lastAadhaarGroupId = null
+            val docsInGroup     = existingDocs.filter { it.aadhaarGroupId == confidentKey }
+            val hasCompletePair = docsInGroup.any { it.aadhaarSide == "FRONT" } &&
+                    docsInGroup.any { it.aadhaarSide == "BACK" }
+
+            if (hasCompletePair) {
+                val newKey = "${confidentKey}_${System.currentTimeMillis()}"
+                anchoredGroupId    = newKey
+                lastAadhaarGroupId = newKey
+                return newKey
             }
+
             anchoredGroupId    = confidentKey
             lastAadhaarGroupId = confidentKey
-            Log.d("AadhaarDebug", "resolveGroupId → confident key: $confidentKey")
             return confidentKey
         }
 
         // ── 2. Full 12-digit DB cross-match ──────────────────────────────────
-        if (sessionId != null && ocrDigits != null && ocrDigits.length == 12) {
-            val existingDocs = try {
-                documentRepository.getExistingAadhaarDocs(sessionId)
-            } catch (e: Exception) {
-                Log.e("AadhaarDebug", "DB cross-match failed", e)
-                emptyList()
-            }
-
+        if (ocrDigits != null && ocrDigits.length == 12) {   // ← removed sessionId gate
+            val existingDocs   = fetchAadhaarDocs()
             val matchedGroupId = existingDocs
                 .mapNotNull { it.aadhaarGroupId }
                 .distinct()
@@ -533,21 +522,11 @@ class ScannerViewModel @Inject constructor(
 
             if (matchedGroupId != null) {
                 lastAadhaarGroupId = matchedGroupId
-                Log.d("AadhaarDebug", "resolveGroupId → full-number DB match: $matchedGroupId")
                 return matchedGroupId
             }
         }
 
-        // ── 3. Carry-forward — only when unambiguous in the current batch ─────
-        //
-        // Problem: pages are sorted [F1..FN, B1..BN]. After all fronts are
-        // processed, lastAadhaarGroupId = FN's groupId. Without this guard,
-        // B1..B(N-1) all carry-forward to FN's group when OCR is weak.
-        //
-        // Fix: only carry-forward when the candidate group is the ONLY one in
-        // the current batch that is still missing thisSide. If there are
-        // multiple incomplete groups, fall through to the in-batch classifier
-        // fill (step 4.5) which picks the correct one from the DB.
+        // ── 3. Carry-forward ─────────────────────────────────────────────────
         if (lastAadhaarGroupId != null && thisSide != null) {
             val batchGroupsMissingThisSide = inBatchDocs
                 .groupBy { it.groupId }
@@ -555,108 +534,92 @@ class ScannerViewModel @Inject constructor(
                 .keys
 
             val unambiguous = when {
-                // No in-batch Aadhaar docs yet → single-card scan, safe to carry-forward
                 batchGroupsMissingThisSide.isEmpty() -> true
-                // Exactly one incomplete group and it IS the carry-forward candidate
                 batchGroupsMissingThisSide.size == 1 &&
                         batchGroupsMissingThisSide.contains(lastAadhaarGroupId) -> true
-                // Multiple incomplete groups → ambiguous, must not carry-forward blindly
                 else -> false
             }
 
-            if (unambiguous) {
-                Log.d("AadhaarDebug",
-                    "resolveGroupId → carry-forward (unambiguous): $lastAadhaarGroupId")
-                return lastAadhaarGroupId!!
-            } else {
-                Log.d("AadhaarDebug",
-                    "resolveGroupId → carry-forward SKIPPED " +
-                            "(${batchGroupsMissingThisSide.size} incomplete groups in batch)")
-            }
+            if (unambiguous) return lastAadhaarGroupId!!
         }
 
         // ── 4. Partial 4-digit DB cross-match ────────────────────────────────
-        if (sessionId != null && ocrDigits != null && ocrDigits.length >= 4) {
-            val existingDocs = try {
-                documentRepository.getExistingAadhaarDocs(sessionId)
-            } catch (e: Exception) { emptyList() }
-
-            val allGroupIds = existingDocs.mapNotNull { it.aadhaarGroupId }.distinct()
-            val last4 = ocrDigits.takeLast(4)
-            val matches = allGroupIds.filter { it.endsWith(last4) }
+        if (ocrDigits != null && ocrDigits.length >= 4) {   // ← removed sessionId gate
+            val existingDocs = fetchAadhaarDocs()
+            val allGroupIds  = existingDocs.mapNotNull { it.aadhaarGroupId }.distinct()
+            val last4        = ocrDigits.takeLast(4)
+            val matches      = allGroupIds.filter { it.endsWith(last4) }
 
             if (matches.size == 1) {
                 lastAadhaarGroupId = matches.first()
-                Log.d("AadhaarDebug", "resolveGroupId → partial DB match: ${matches.first()}")
                 return matches.first()
             }
         }
 
         // ── 4.5 Classifier-guided incomplete group fill ───────────────────────
-        // First try the in-memory batch (avoids DB round-trip and is always
-        // fresh, since docs are saved sequentially before this point).
-        // Then fall back to DB for docs from previous scans in this session.
         if (thisSide != null) {
-            // In-batch check
             val batchIncomplete = inBatchDocs
                 .groupBy { it.groupId }
                 .filter { (_, docs) -> docs.none { it.side == thisSide } }
                 .keys.toList()
 
             if (batchIncomplete.size == 1) {
-                val matchId = batchIncomplete.first()
-                lastAadhaarGroupId = matchId
-                Log.d("AadhaarDebug",
-                    "resolveGroupId → in-batch classifier fill ($thisSide): $matchId")
-                return matchId
+                lastAadhaarGroupId = batchIncomplete.first()
+                return batchIncomplete.first()
             }
 
-            // DB-based check for docs from earlier scans in this session
-            if (sessionId != null) {
-                val existingDocs = try {
-                    documentRepository.getExistingAadhaarDocs(sessionId)
-                } catch (e: Exception) { emptyList() }
-
-                val groupsByMissingSide = existingDocs
-                    .filter { it.aadhaarGroupId != null }
-                    .groupBy { it.aadhaarGroupId!! }
-                    .mapValues { (_, docs) ->
-                        val hasFront = docs.any { it.aadhaarSide == "FRONT" }
-                        val hasBack  = docs.any { it.aadhaarSide == "BACK"  }
-                        when {
-                            hasFront && !hasBack -> "BACK"
-                            hasBack && !hasFront -> "FRONT"
-                            else                 -> null
-                        }
+            val existingDocs = fetchAadhaarDocs()
+            val groupsByMissingSide = existingDocs
+                .filter { it.aadhaarGroupId != null }
+                .groupBy { it.aadhaarGroupId!! }
+                .mapValues { (_, docs) ->
+                    val hasFront = docs.any { it.aadhaarSide == "FRONT" }
+                    val hasBack  = docs.any { it.aadhaarSide == "BACK" }
+                    when {
+                        hasFront && !hasBack -> "BACK"
+                        hasBack && !hasFront -> "FRONT"
+                        else                 -> null
                     }
-                    .filter { (_, missingSide) -> missingSide != null }
+                }
+                .filter { (_, missingSide) -> missingSide != null }
 
-                val matchingGroups = groupsByMissingSide
-                    .filter { (_, missingSide) -> missingSide == thisSide }
-                    .keys.toList()
+            val matchingGroups = groupsByMissingSide
+                .filter { (_, missingSide) -> missingSide == thisSide }
+                .keys.toList()
 
-                if (matchingGroups.size == 1) {
-                    val matchId = matchingGroups.first()
-                    lastAadhaarGroupId = matchId
-                    Log.d("AadhaarDebug",
-                        "resolveGroupId → DB classifier fill ($thisSide): $matchId")
-                    return matchId
+            when {
+                matchingGroups.size == 1 -> {
+                    // Unambiguous — exactly one incomplete group needs this side
+                    lastAadhaarGroupId = matchingGroups.first()
+                    return matchingGroups.first()
+                }
+                matchingGroups.size > 1 -> {
+                    // Multiple incomplete groups — pick the most recently created one
+                    // This handles "next day" scanning where old incomplete pairs exist
+                    val mostRecent = existingDocs
+                        .filter { it.aadhaarGroupId in matchingGroups }
+                        .maxByOrNull { it.createdAt }
+                        ?.aadhaarGroupId
+                    if (mostRecent != null) {
+                        lastAadhaarGroupId = mostRecent
+                        Log.d("AadhaarDebug",
+                            "resolveGroupId → multiple incomplete groups, picking most recent: $mostRecent")
+                        return mostRecent
+                    }
                 }
             }
         }
 
-        // ── 5. Partial OCR key (name only OR number only) ─────────────────────
+        // ── 5. Partial OCR key ────────────────────────────────────────────────
         val partialKey = if (fields != null)
             ocrHelper.buildAadhaarGroupId(fields.name, fields.idNumber)
         else null
 
-        // ── 6. Last resort — unique timestamp ────────────────────────────────
+        // ── 6. Last resort ────────────────────────────────────────────────────
         val result = partialKey ?: "aadhaar_grp_${System.currentTimeMillis()}"
         lastAadhaarGroupId = result
-        Log.d("AadhaarDebug", "resolveGroupId → fallback key: $result")
         return result
     }
-
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun normalizeForMismatch(label: String): String = when (label) {
@@ -705,15 +668,22 @@ class ScannerViewModel @Inject constructor(
         _state.value = _state.value.copy(saveSuccess = false)
     }
 
-    fun onReset() {
+    fun onReset(keepTarget: Boolean = false) {
         synchronized(cropJobLock) { pendingCropJobs.clear() }
-        _state.value = ScannerState(
-            sessionId        = _state.value.sessionId,
-            targetFolderId   = _state.value.targetFolderId,
-            targetFolderName = _state.value.targetFolderName,
-            targetExportType = _state.value.targetExportType,
-            targetDocType    = _state.value.targetDocType
-        )
+        _state.value = if (keepTarget) {
+            ScannerState(
+                sessionId        = _state.value.sessionId,
+                targetFolderId   = _state.value.targetFolderId,
+                targetFolderName = _state.value.targetFolderName,
+                targetExportType = _state.value.targetExportType,
+                targetDocType    = _state.value.targetDocType
+            )
+        } else {
+            ScannerState(sessionId = _state.value.sessionId)  // clears targetDocType
+        }
+        // Always clear Aadhaar group state on reset
+        lastAadhaarGroupId = null
+        anchoredGroupId    = null
     }
 
     private fun updatePage(pageId: String, transform: (ScannedPage) -> ScannedPage) {

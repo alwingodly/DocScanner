@@ -72,13 +72,11 @@ fun DocScannerNavHost(
     }
 
     LaunchedEffect(state.saveSuccess) {
-
         if (state.saveSuccess) {
             scannerViewModel.onSaveNavigated()
             navController.popBackStack(Screen.AllDocuments.route, inclusive = false)
             if (state.pendingMismatches.isEmpty()) {
-                scannerViewModel.onReset()
-                // Do NOT call clearAadhaarGroup() here — user may scan back card next
+                scannerViewModel.onReset(keepTarget = false)
             }
         }
     }
@@ -157,16 +155,16 @@ fun DocScannerNavHost(
                     onEnterSelectMode = { isSelectMode = true },
                     onDocumentClick = { navigateToViewer(it) },
                     onScanClick = {
-                        scannerViewModel.onReset()
+                        scannerViewModel.onReset(keepTarget = false)
                         navController.navigate(Screen.Camera.route)
                     },
                     onScanToFolder = { folder ->
-                        scannerViewModel.onReset()
+                        scannerViewModel.onReset(keepTarget = false)
                         scannerViewModel.setTargetFolder(
-                            folderId = folder.id,
+                            folderId   = folder.id,
                             folderName = folder.name,
                             exportType = folder.exportType,
-                            docType = folder.docType
+                            docType    = folder.docType
                         )
                         navController.navigate(Screen.Camera.route)
                     },
@@ -210,11 +208,10 @@ fun DocScannerNavHost(
                     onPhotoCaptured    = { bmp, corners -> scannerViewModel.onPhotoCaptured(bmp, corners) },
                     onDone             = { scannerViewModel.onAutoSavePages() },
                     onBack = {
-                        // Only clear if user didn't save anything — if pages exist they cancelled
                         if (state.pages.isNotEmpty()) {
                             scannerViewModel.clearAadhaarGroup()
                         }
-                        scannerViewModel.onReset()
+                        scannerViewModel.onReset(keepTarget = false)
                         navController.popBackStack()
                     }
                 )
