@@ -16,7 +16,7 @@ import com.example.docscanner.data.local.entity.FolderEntity
         ApplicationSessionEntity::class,
         ApplicationDocumentEntity::class
     ],
-    version = 8,          // ← bump from 7
+    version = 11,          // ← bump to 11
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -57,9 +57,32 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATION_7_8 = object : Migration(7, 8) {  // ← new
+        val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE documents ADD COLUMN sessionId TEXT")
+            }
+        }
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE folders ADD COLUMN docType TEXT NOT NULL DEFAULT 'Other'"
+                )
+            }
+        }
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarSide TEXT")
+                db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarGroupId TEXT")
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {    // ← inside companion object
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE documents ADD COLUMN docGroupId TEXT DEFAULT NULL"
+                )
             }
         }
     }

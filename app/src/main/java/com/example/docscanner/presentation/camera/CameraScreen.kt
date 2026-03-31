@@ -62,7 +62,11 @@ fun CameraScreen(
                 scope.launch {
                     isProcessing = true
                     pageUris.forEach { uri ->
-                        uriToBitmap(context, uri)?.let { onPhotoCaptured(it, null) }
+                        uriToBitmap(context, uri)?.let { bmp ->
+                            // Pass a "skip transform" flag via a sentinel corners value,
+                            // or just call onPhotoCaptured and set croppedBitmap = originalBitmap
+                            onPhotoCaptured(bmp, null)
+                        }
                     }
                     isProcessing = false
                     // Trigger auto-save (navigation handled by NavHost)

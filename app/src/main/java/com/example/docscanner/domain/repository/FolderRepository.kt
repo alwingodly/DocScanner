@@ -19,31 +19,29 @@ sealed class FolderResult {
 }
 
 fun ApiFolderDto.toEntity(sessionId: String? = null) = FolderEntity(
-    id         = if (sessionId != null) "${sessionId}_${id}" else id, // ← unique per session
-    name       = name,
-    icon       = icon,
+    id        = if (sessionId != null) "${sessionId}_${id}" else id,
+    name      = name,
+    icon      = icon,
     exportType = "PDF",
-    createdAt  = System.currentTimeMillis(),
-    sortOrder  = 0,
-    sessionId  = sessionId
+    createdAt = System.currentTimeMillis(),
+    sortOrder = 0,
+    sessionId = sessionId,
+    docType   = docType                     // ← pass through
 )
 
 @Singleton
 class FolderRepository @Inject constructor(
-    private val folderDao      : FolderDao,
+    private val folderDao       : FolderDao,
     private val folderApiService: FolderApiService
 ) {
 
-    // ── Existing (untouched) ──────────────────────────────────────────────────
-
-    /** Global folders for the plain doc scanner (sessionId IS NULL) */
     val folders: Flow<List<Folder>> = folderDao.getAllFolders().map { entities ->
         entities.map { it.toDomain() }
     }
 
     suspend fun syncFolders(): FolderResult {
         return try {
-            val response = folderApiService.getFolders(null) // global folders
+            val response = folderApiService.getFolders(null)
             folderDao.insertFolders(response.folders.map { it.toEntity(sessionId = null) })
             FolderResult.Success
         } catch (e: Exception) {
@@ -60,7 +58,7 @@ class FolderRepository @Inject constructor(
         if (fromIndex !in currentFolders.indices || toIndex !in currentFolders.indices) return
 
         val reordered = currentFolders.toMutableList()
-        val moved = reordered.removeAt(fromIndex)
+        val moved     = reordered.removeAt(fromIndex)
         reordered.add(toIndex, moved)
 
         reordered.forEachIndexed { order, folder ->
@@ -68,25 +66,16 @@ class FolderRepository @Inject constructor(
         }
     }
 
-    // ── New session-aware methods ─────────────────────────────────────────────
-
-    /** Live folder list scoped to a specific session */
     fun getFoldersForSession(sessionId: String): Flow<List<Folder>> =
         folderDao.getFoldersForSession(sessionId).map { entities ->
             entities.map { it.toDomain() }
         }
 
-    /**
-     * Fetch folders from API for the given application type
-     * and save them locally tied to this session.
-     * Safe to call multiple times — skips if folders already exist.
-     */
     suspend fun syncFoldersForSession(
         sessionId: String,
         applicationType: ApplicationType
     ): FolderResult {
         return try {
-            // Skip if already synced for this session
             val existing = folderDao.countFoldersForSession(sessionId)
             if (existing > 0) return FolderResult.Success
 
@@ -101,7 +90,6 @@ class FolderRepository @Inject constructor(
         }
     }
 
-    /** Call when deleting a session — cleans up its folders */
     suspend fun deleteFoldersForSession(sessionId: String) {
         folderDao.deleteFoldersForSession(sessionId)
     }
@@ -116,5 +104,6 @@ fun FolderEntity.toDomain() = Folder(
     exportType    = runCatching { FolderExportType.valueOf(exportType) }
         .getOrDefault(FolderExportType.PDF),
     createdAt     = createdAt,
-    documentCount = documentCount
+    documentCount = documentCount,
+    docType       = docType                 // ← map through
 )

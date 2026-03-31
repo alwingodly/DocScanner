@@ -12,5 +12,6 @@ data class FolderEntity(
     val createdAt: Long,
     val documentCount: Int = 0,
     val sortOrder: Int = 0,
-    val sessionId: String? = null   // ← new column
+    val sessionId: String? = null,
+    val docType: String = "Other"   // ← new: maps to DocClassType.displayName
 )

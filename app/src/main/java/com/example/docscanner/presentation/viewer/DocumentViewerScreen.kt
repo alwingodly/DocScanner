@@ -532,10 +532,10 @@ private fun ChangeTypeBottomSheet(
     onDismiss: () -> Unit
 ) {
     val types = listOf(
-        DocClassType.AADHAAR,
+        DocClassType.AADHAAR_BACK,
+        DocClassType.AADHAAR_FRONT,
         DocClassType.PAN,
         DocClassType.VOTER_ID,
-        DocClassType.DRIVING_LICENSE,
         DocClassType.PASSPORT,
         DocClassType.OTHER
     )

@@ -36,12 +36,12 @@ class DocumentClassifier(context: Context) {
         // 4 = unknown
         // 5 = voter_id
         private val LABELS = listOf(
-            DocClassType.AADHAAR,   // 0 → aadhaar_back
-            DocClassType.AADHAAR,   // 1 → aadhaar_front
-            DocClassType.PAN,       // 2 → pan_card
-            DocClassType.PASSPORT,  // 3 → passport
-            DocClassType.OTHER,     // 4 → unknown
-            DocClassType.VOTER_ID   // 5 → voter_id
+            DocClassType.AADHAAR_BACK,   // 0 → aadhaar_back
+            DocClassType.AADHAAR_FRONT,  // 1 → aadhaar_front
+            DocClassType.PAN,
+            DocClassType.PASSPORT,
+            DocClassType.OTHER,
+            DocClassType.VOTER_ID
         )
     }
 

@@ -46,13 +46,16 @@ interface DocumentDao {
     @Query("UPDATE documents SET isMergedSource = 0 WHERE id IN (:documentIds)")
     suspend fun restoreMergedSources(documentIds: List<String>)
 
-    // ── New session-aware queries ─────────────────────────────────────────────
+    // ── Session-aware queries ─────────────────────────────────────────────────
 
-    /** All unfoldered docs for a specific session */
+    /**
+     * ALL docs for a session — both foldered and unfoldered.
+     * folderId = '' filter removed so folder-scanned docs are visible
+     * in AllDocumentsScreen alongside global-scan docs.
+     */
     @Query("""
         SELECT * FROM documents 
         WHERE sessionId = :sessionId 
-        AND folderId = '' 
         AND isMergedSource = 0 
         ORDER BY createdAt DESC
     """)
@@ -73,4 +76,35 @@ interface DocumentDao {
 
     @Query("DELETE FROM documents WHERE sessionId = :sessionId")
     suspend fun deleteAllDocumentsForSession(sessionId: String)
+
+    @Query("UPDATE documents SET aadhaarSide = :side, aadhaarGroupId = :groupId WHERE id = :docId")
+    suspend fun updateAadhaarGroup(docId: String, side: String?, groupId: String?)
+
+    @Query("SELECT * FROM documents WHERE aadhaarGroupId = :groupId AND isMergedSource = 0")
+    fun getAadhaarGroup(groupId: String): Flow<List<DocumentEntity>>
+
+    @Query("""
+    SELECT * FROM documents 
+    WHERE sessionId = :sessionId 
+    AND (
+        docClassLabel = 'Aadhaar'
+        OR docClassLabel = 'Aadhaar Front' 
+        OR docClassLabel = 'Aadhaar Back'
+    )
+    AND aadhaarGroupId IS NOT NULL
+    AND isMergedSource = 0
+""")
+    suspend fun getExistingAadhaarDocs(sessionId: String): List<DocumentEntity>
+
+    @Query("UPDATE documents SET aadhaarGroupId = :groupId WHERE id = :docId")
+    suspend fun updateAadhaarGroupIdOnly(docId: String, groupId: String)
+
+    @Query("UPDATE documents SET docGroupId = :groupId WHERE id = :docId")
+    suspend fun updateDocGroupId(docId: String, groupId: String?)
+
+    @Query("SELECT * FROM documents WHERE docGroupId = :groupId AND isMergedSource = 0 ORDER BY createdAt DESC")
+    fun getDocsByGroup(groupId: String): Flow<List<DocumentEntity>>
+
+    @Query("SELECT DISTINCT docGroupId FROM documents WHERE docClassLabel = :docType AND docGroupId IS NOT NULL AND sessionId = :sessionId")
+    suspend fun getGroupIdsForType(docType: String, sessionId: String): List<String>
 }

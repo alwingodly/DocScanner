@@ -16,5 +16,8 @@ data class DocumentEntity(
     val createdAt: Long,
     val mergedFromDocumentIds: String? = null,
     val isMergedSource: Boolean = false,
-    val sessionId: String? = null   // ← new, null = global doc scanner
+    val aadhaarSide: String? = null,       // "FRONT", "BACK", or null
+    val aadhaarGroupId: String? = null,
+    val sessionId: String? = null,   // ← new, null = global doc scanner
+    val docGroupId: String? = null,
 )

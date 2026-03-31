@@ -83,6 +83,27 @@ class DocumentRepository @Inject constructor(
     suspend fun deleteAllDocumentsForSession(sessionId: String) {
         documentDao.deleteAllDocumentsForSession(sessionId)
     }
+
+    suspend fun updateAadhaarGroup(docId: String, side: String?, groupId: String?) {
+        documentDao.updateAadhaarGroup(docId, side, groupId)
+    }
+
+    suspend fun getExistingAadhaarDocs(sessionId: String): List<Document> =
+        documentDao.getExistingAadhaarDocs(sessionId).map { it.toDomain() }
+
+    suspend fun updateAadhaarGroupIdOnly(docId: String, groupId: String) {
+        documentDao.updateAadhaarGroupIdOnly(docId, groupId)
+    }
+
+    suspend fun updateDocGroupId(docId: String, groupId: String?) {
+        documentDao.updateDocGroupId(docId, groupId)
+    }
+
+    fun getDocsByGroup(groupId: String): Flow<List<Document>> =
+        documentDao.getDocsByGroup(groupId).map { it.map { e -> e.toDomain() } }
+
+    suspend fun getGroupIdsForType(docType: String, sessionId: String): List<String> =
+        documentDao.getGroupIdsForType(docType, sessionId)
 }
 
 // ── Mappers ───────────────────────────────────────────────────────────────────
@@ -98,7 +119,10 @@ fun DocumentEntity.toDomain() = Document(
     createdAt             = createdAt,
     mergedFromDocumentIds = mergedFromDocumentIds,
     isMergedSource        = isMergedSource,
-    sessionId             = sessionId
+    sessionId             = sessionId,
+    aadhaarSide           = aadhaarSide,
+    aadhaarGroupId        = aadhaarGroupId,
+    docGroupId            = docGroupId,     // ← add
 )
 
 fun Document.toEntity() = DocumentEntity(
@@ -112,5 +136,8 @@ fun Document.toEntity() = DocumentEntity(
     createdAt             = createdAt,
     mergedFromDocumentIds = mergedFromDocumentIds,
     isMergedSource        = isMergedSource,
-    sessionId             = sessionId
+    sessionId             = sessionId,
+    aadhaarSide           = aadhaarSide,
+    aadhaarGroupId        = aadhaarGroupId,
+    docGroupId            = docGroupId,     // ← add
 )

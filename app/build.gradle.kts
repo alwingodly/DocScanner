@@ -62,6 +62,7 @@ dependencies {
     // ── Room ──
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
+    implementation(libs.androidx.compose.foundation)
     kapt(libs.androidx.room.compiler)
 
     // ── CameraX ──
@@ -77,11 +78,13 @@ dependencies {
 
     // ── ExifInterface (for correct image rotation from gallery/scanner) ──
     implementation("androidx.exifinterface:exifinterface:1.4.2")
-
+    implementation("io.coil-kt:coil-compose:2.6.0")
     // ── TensorFlow Lite (document classification) ──
     implementation("org.tensorflow:tensorflow-lite:2.17.0")
     implementation("org.tensorflow:tensorflow-lite-support:0.5.0")
     implementation("com.google.mlkit:barcode-scanning:17.2.0")
+    implementation("sh.calvin.reorderable:reorderable:2.4.0")
+
     // ── Hilt DI ──
     implementation(libs.hilt.android)
     kapt(libs.hilt.android.compiler)
