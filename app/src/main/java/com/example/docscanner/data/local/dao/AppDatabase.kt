@@ -6,6 +6,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.docscanner.data.local.entity.ApplicationDocumentEntity
 import com.example.docscanner.data.local.entity.ApplicationSessionEntity
+import com.example.docscanner.data.local.entity.DocGroupEntity
 import com.example.docscanner.data.local.entity.DocumentEntity
 import com.example.docscanner.data.local.entity.FolderEntity
 
@@ -14,9 +15,10 @@ import com.example.docscanner.data.local.entity.FolderEntity
         FolderEntity::class,
         DocumentEntity::class,
         ApplicationSessionEntity::class,
-        ApplicationDocumentEntity::class
+        ApplicationDocumentEntity::class,
+        DocGroupEntity::class           // ← new
     ],
-    version = 11,          // ← bump to 11
+    version = 12,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -24,6 +26,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun documentDao(): DocumentDao
     abstract fun applicationSessionDao(): ApplicationSessionDao
     abstract fun applicationDocumentDao(): ApplicationDocumentDao
+    abstract fun docGroupDao(): DocGroupDao         // ← new
 
     companion object {
         val MIGRATION_5_6 = object : Migration(5, 6) {
@@ -78,11 +81,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATION_10_11 = object : Migration(10, 11) {    // ← inside companion object
+        val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    "ALTER TABLE documents ADD COLUMN docGroupId TEXT DEFAULT NULL"
-                )
+                db.execSQL("ALTER TABLE documents ADD COLUMN docGroupId TEXT DEFAULT NULL")
+            }
+        }
+
+        val MIGRATION_11_12 = object : Migration(11, 12) {     // ← new
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS doc_groups (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                """)
             }
         }
     }

@@ -34,13 +34,13 @@ import javax.inject.Inject
 @HiltViewModel
 class AllDocumentsViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
-    private val documentRepository: DocumentRepository,
-    private val folderRepository  : FolderRepository,
-    private val aadhaarMasker     : AadhaarMasker,
-    private val panMasker         : PanMasker
+    private val documentRepository : DocumentRepository,
+    private val folderRepository   : FolderRepository,
+    private val aadhaarMasker      : AadhaarMasker,
+    private val panMasker          : PanMasker
 ) : ViewModel() {
 
-    // ── SharedPreferences for section ordering ────────────────────────────────
+    // ── SharedPreferences ─────────────────────────────────────────────────────
 
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences("doc_section_order", Context.MODE_PRIVATE)
@@ -57,7 +57,7 @@ class AllDocumentsViewModel @Inject constructor(
         }.apply()
     }
 
-    // ── Session context ───────────────────────────────────────────────────────
+    // ── Session ───────────────────────────────────────────────────────────────
 
     private val _activeSessionId = MutableStateFlow<String?>(null)
     private val _isLoading       = MutableStateFlow(false)
@@ -69,27 +69,24 @@ class AllDocumentsViewModel @Inject constructor(
         _activeSessionId.value = sessionId
     }
 
-    fun reorderGroupDocs(groupId: String, fromIdx: Int, toIdx: Int, docs: List<Document>) {
-        if (fromIdx == toIdx || fromIdx !in docs.indices || toIdx !in docs.indices) return
-        val ids   = docs.map { it.id }.toMutableList()
-        val moved = ids.removeAt(fromIdx)
-        ids.add(toIdx, moved)
-        val updated = _sectionDocOrder.value + ("group_$groupId" to ids)
-        _sectionDocOrder.value = updated
-        saveOrderToPrefs(updated)
-    }
     // ── Documents ─────────────────────────────────────────────────────────────
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val documents: StateFlow<List<Document>> = _activeSessionId
         .flatMapLatest { sessionId ->
-            if (sessionId != null)
-                documentRepository.getDocumentsForSession(sessionId)
-            else
-                documentRepository.getAllDocuments()
+            if (sessionId != null) documentRepository.getDocumentsForSession(sessionId)
+            else documentRepository.getAllDocuments()
         }
         .onEach { _isLoading.value = false }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    // ── Group names ───────────────────────────────────────────────────────────
+
+    /** groupId → display name */
+    val docGroupNames: StateFlow<Map<String, String>> =
+        documentRepository.getAllDocGroups()
+            .map { list -> list.associate { it.id to it.name } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     // ── Aadhaar grouping ──────────────────────────────────────────────────────
 
@@ -97,23 +94,13 @@ class AllDocumentsViewModel @Inject constructor(
         .map { docs ->
             docs
                 .filter { it.docClassLabel?.startsWith("Aadhaar") == true }
-                // Only docs with an explicit groupId enter pair logic.
-                // Docs with null groupId → unpairedDocs → long-press pairing available.
                 .filter { it.aadhaarGroupId != null }
                 .groupBy { it.aadhaarGroupId!! }
                 .map { (groupId, groupDocs) ->
-                    // When the same person is scanned twice, multiple FRONT or BACK
-                    // docs can share the same groupId. Take the most recent of each
-                    // side so the pair card always shows the latest scan.
-                    // Older duplicates have null groupId (after ungrouping) or are
-                    // simply not shown in the pair slot — user can delete them.
-                    val front = groupDocs
-                        .filter { it.aadhaarSide == "FRONT" }
+                    val front = groupDocs.filter { it.aadhaarSide == "FRONT" }
                         .maxByOrNull { it.createdAt }
-                    val back  = groupDocs
-                        .filter { it.aadhaarSide == "BACK" }
+                    val back  = groupDocs.filter { it.aadhaarSide == "BACK" }
                         .maxByOrNull { it.createdAt }
-
                     AadhaarGroup(
                         groupId           = groupId,
                         holderName        = groupDocs.firstNotNullOfOrNull {
@@ -132,25 +119,22 @@ class AllDocumentsViewModel @Inject constructor(
 
     fun getGroupDocs(groupId: String): Flow<List<Document>> =
         documentRepository.getDocsByGroup(groupId)
-    // ── Generic doc groups ────────────────────────────────────────────────────────
-// Groups all docs by docGroupId — used by GalleryPhotoGrid to render GroupedTile
+
+    // ── Generic doc groups ────────────────────────────────────────────────────
+
     val docGroups: StateFlow<Map<String, List<Document>>> = documents
         .map { docs ->
-            docs
-                .filter { it.docGroupId != null }
-                .groupBy { it.docGroupId!! }
+            docs.filter { it.docGroupId != null }.groupBy { it.docGroupId!! }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
-
+    // ── Aadhaar actions ───────────────────────────────────────────────────────
 
     fun manuallyGroupAadhaar(docId1: String, docId2: String) {
         viewModelScope.launch {
             val doc1 = documents.value.firstOrNull { it.id == docId1 } ?: return@launch
             val doc2 = documents.value.firstOrNull { it.id == docId2 } ?: return@launch
-
             val groupId = "manual_${System.currentTimeMillis()}"
-
             val (side1, side2) = when {
                 doc1.aadhaarSide != null && doc2.aadhaarSide != null ->
                     doc1.aadhaarSide to doc2.aadhaarSide
@@ -160,7 +144,6 @@ class AllDocumentsViewModel @Inject constructor(
                     (if (doc2.aadhaarSide == "FRONT") "BACK" else "FRONT") to doc2.aadhaarSide
                 else -> "FRONT" to "BACK"
             }
-
             documentRepository.updateAadhaarGroup(docId1, side1, groupId)
             documentRepository.updateAadhaarGroup(docId2, side2, groupId)
         }
@@ -175,7 +158,6 @@ class AllDocumentsViewModel @Inject constructor(
     fun ungroupAadhaar(group: AadhaarGroup) {
         viewModelScope.launch {
             listOfNotNull(group.frontDoc, group.backDoc).forEach { doc ->
-                // groupId = null → singleton unpaired; side is preserved
                 documentRepository.updateAadhaarGroup(doc.id, doc.aadhaarSide, null)
             }
         }
@@ -183,36 +165,25 @@ class AllDocumentsViewModel @Inject constructor(
 
     fun swapAadhaarSides(group: AadhaarGroup) {
         viewModelScope.launch {
-            group.frontDoc?.let {
-                documentRepository.updateAadhaarGroup(it.id, "BACK", group.groupId)
-            }
-            group.backDoc?.let {
-                documentRepository.updateAadhaarGroup(it.id, "FRONT", group.groupId)
-            }
+            group.frontDoc?.let { documentRepository.updateAadhaarGroup(it.id, "BACK", group.groupId) }
+            group.backDoc?.let  { documentRepository.updateAadhaarGroup(it.id, "FRONT", group.groupId) }
         }
     }
 
+    // ── Generic doc group actions ─────────────────────────────────────────────
 
-    // ── Generic doc grouping ──────────────────────────────────────────────────────
-
-    fun createGroup(docId: String) {
-        viewModelScope.launch {
-            val groupId = "grp_${System.currentTimeMillis()}"
-            documentRepository.updateDocGroupId(docId, groupId)
-        }
-    }
-
-    fun addToGroup(docId: String, groupId: String) {
-        viewModelScope.launch {
-            documentRepository.updateDocGroupId(docId, groupId)
-        }
-    }
-
-    fun createGroupFromDocs(docIds: List<String>) {
+    fun createGroupFromDocs(docIds: List<String>, name: String) {
         if (docIds.size < 2) return
         viewModelScope.launch {
             val groupId = "grp_${System.currentTimeMillis()}"
+            documentRepository.createDocGroup(groupId, name)
             docIds.forEach { documentRepository.updateDocGroupId(it, groupId) }
+        }
+    }
+
+    fun renameDocGroup(groupId: String, newName: String) {
+        viewModelScope.launch {
+            documentRepository.renameDocGroup(groupId, newName)
         }
     }
 
@@ -220,6 +191,15 @@ class AllDocumentsViewModel @Inject constructor(
         viewModelScope.launch {
             val docs = documents.value.filter { it.docGroupId == groupId }
             docs.forEach { documentRepository.updateDocGroupId(it.id, null) }
+            documentRepository.deleteDocGroup(groupId)
+        }
+    }
+
+    fun deleteEntireGroup(groupId: String) {
+        viewModelScope.launch {
+            val docs = documents.value.filter { it.docGroupId == groupId }
+            docs.forEach { documentRepository.deleteDocument(it) }
+            documentRepository.deleteDocGroup(groupId)
         }
     }
 
@@ -229,16 +209,38 @@ class AllDocumentsViewModel @Inject constructor(
         }
     }
 
+    fun addToGroup(docId: String, groupId: String) {
+        viewModelScope.launch { documentRepository.updateDocGroupId(docId, groupId) }
+    }
+
+    fun createGroup(docId: String) {
+        viewModelScope.launch {
+            val groupId = "grp_${System.currentTimeMillis()}"
+            documentRepository.createDocGroup(groupId, "Group ${docGroups.value.size + 1}")
+            documentRepository.updateDocGroupId(docId, groupId)
+        }
+    }
+
+    fun reorderGroupDocs(groupId: String, fromIdx: Int, toIdx: Int, docs: List<Document>) {
+        if (fromIdx == toIdx || fromIdx !in docs.indices || toIdx !in docs.indices) return
+        val ids   = docs.map { it.id }.toMutableList()
+        val moved = ids.removeAt(fromIdx)
+        ids.add(toIdx, moved)
+        val updated = _sectionDocOrder.value + ("group_$groupId" to ids)
+        _sectionDocOrder.value = updated
+        saveOrderToPrefs(updated)
+    }
+
     suspend fun getGroupsForType(docType: String): List<DocGroupInfo> {
         val sessionId = _activeSessionId.value ?: return emptyList()
         val groupIds  = documentRepository.getGroupIdsForType(docType, sessionId)
         return groupIds.map { groupId ->
             val docs = documents.value.filter { it.docGroupId == groupId }
             DocGroupInfo(
-                groupId      = groupId,
-                docType      = docType,
-                previewDoc   = docs.maxByOrNull { it.createdAt },
-                count        = docs.size
+                groupId    = groupId,
+                docType    = docType,
+                previewDoc = docs.maxByOrNull { it.createdAt },
+                count      = docs.size
             )
         }
     }
@@ -249,15 +251,14 @@ class AllDocumentsViewModel @Inject constructor(
         val previewDoc : Document?,
         val count      : Int
     )
+
     // ── Folders ───────────────────────────────────────────────────────────────
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val allFolders: StateFlow<List<Folder>> = _activeSessionId
         .flatMapLatest { sessionId ->
-            if (sessionId != null)
-                folderRepository.getFoldersForSession(sessionId)
-            else
-                folderRepository.folders
+            if (sessionId != null) folderRepository.getFoldersForSession(sessionId)
+            else folderRepository.folders
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -291,8 +292,7 @@ class AllDocumentsViewModel @Inject constructor(
             if (folderList.isEmpty()) return@combine emptyMap()
 
             val labelToFolderName = folderList.associate { it.docType to it.name }
-            val otherFolderName   = folderList
-                .lastOrNull { it.docType == "Other" }?.name
+            val otherFolderName   = folderList.lastOrNull { it.docType == "Other" }?.name
                 ?: folderList.last().name
 
             val bucket = mutableMapOf<String, MutableList<Document>>()
@@ -320,7 +320,77 @@ class AllDocumentsViewModel @Inject constructor(
         }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
-    // ── Organize mode ─────────────────────────────────────────────────────────
+    // ── Document actions ──────────────────────────────────────────────────────
+
+    fun moveDocumentToFolder(documentId: String, targetFolderId: String) {
+        viewModelScope.launch { documentRepository.moveDocumentToFolder(documentId, targetFolderId) }
+    }
+
+    fun deleteDocument(document: Document) {
+        viewModelScope.launch { documentRepository.deleteDocument(document) }
+    }
+
+    fun renameDocument(document: Document, newName: String) {
+        viewModelScope.launch { documentRepository.renameDocument(document.id, newName) }
+    }
+
+    fun changeDocumentType(document: Document, newLabel: String) {
+        viewModelScope.launch {
+            val groupId = document.docGroupId
+            if (groupId != null) {
+                val groupDocs = documents.value.filter { it.docGroupId == groupId }
+                groupDocs.forEach { doc ->
+                    documentRepository.updateDocClassLabel(doc.id, newLabel)
+                    if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card")
+                        applyMaskingIfNeeded(doc, newLabel)
+                }
+            } else {
+                documentRepository.updateDocClassLabel(document.id, newLabel)
+                if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card")
+                    applyMaskingIfNeeded(document, newLabel)
+            }
+        }
+    }
+
+    private suspend fun applyMaskingIfNeeded(document: Document, label: String) {
+        val imagePath = document.thumbnailPath ?: return
+        try {
+            val uri    = android.net.Uri.parse(imagePath)
+            val bitmap: Bitmap? = when (uri.scheme) {
+                "file"    -> BitmapFactory.decodeFile(uri.path)
+                "content" -> appContext.contentResolver.openInputStream(uri)
+                    ?.use { BitmapFactory.decodeStream(it) }
+                else -> BitmapFactory.decodeFile(imagePath)
+            }
+            if (bitmap == null) return
+            val maskedBitmap = when {
+                label.startsWith("Aadhaar") -> aadhaarMasker.mask(bitmap)
+                label == "PAN Card"         -> panMasker.mask(bitmap)
+                else                        -> return
+            }
+            if (maskedBitmap !== bitmap) {
+                when (uri.scheme) {
+                    "file"    -> File(uri.path!!).outputStream().use {
+                        maskedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)
+                    }
+                    "content" -> appContext.contentResolver.openOutputStream(uri, "wt")?.use {
+                        maskedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)
+                    }
+                    else -> File(imagePath).outputStream().use {
+                        maskedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("AllDocumentsVM", "Masking on type change failed", e)
+        }
+    }
+
+    fun updateClassification(document: Document, label: String) {
+        viewModelScope.launch { documentRepository.updateClassification(document.id, label) }
+    }
+
+    // ── Organize ──────────────────────────────────────────────────────────────
 
     private val _isOrganizing     = MutableStateFlow(false)
     val isOrganizing: StateFlow<Boolean> = _isOrganizing.asStateFlow()
@@ -344,82 +414,4 @@ class AllDocumentsViewModel @Inject constructor(
     }
 
     fun clearOrganize() { /* no state to clear */ }
-
-    // ── Document actions ──────────────────────────────────────────────────────
-
-    fun moveDocumentToFolder(documentId: String, targetFolderId: String) {
-        viewModelScope.launch {
-            documentRepository.moveDocumentToFolder(documentId, targetFolderId)
-        }
-    }
-
-    fun deleteDocument(document: Document) {
-        viewModelScope.launch { documentRepository.deleteDocument(document) }
-    }
-
-    fun renameDocument(document: Document, newName: String) {
-        viewModelScope.launch { documentRepository.renameDocument(document.id, newName) }
-    }
-
-    fun changeDocumentType(document: Document, newLabel: String) {
-        viewModelScope.launch {
-            // If this doc belongs to a group, move ALL docs in the group together
-            val groupId = document.docGroupId
-            if (groupId != null) {
-                val groupDocs = documents.value.filter { it.docGroupId == groupId }
-                groupDocs.forEach { doc ->
-                    documentRepository.updateDocClassLabel(doc.id, newLabel)
-                    if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card") {
-                        applyMaskingIfNeeded(doc, newLabel)
-                    }
-                }
-            } else {
-                documentRepository.updateDocClassLabel(document.id, newLabel)
-                if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card") {
-                    applyMaskingIfNeeded(document, newLabel)
-                }
-            }
-        }
-    }
-
-    private suspend fun applyMaskingIfNeeded(document: Document, label: String) {
-        val imagePath = document.thumbnailPath ?: return
-        try {
-            val uri    = android.net.Uri.parse(imagePath)
-            val bitmap: Bitmap? = when (uri.scheme) {
-                "file"    -> BitmapFactory.decodeFile(uri.path)
-                "content" -> appContext.contentResolver.openInputStream(uri)?.use {
-                    BitmapFactory.decodeStream(it)
-                }
-                else -> BitmapFactory.decodeFile(imagePath)
-            }
-            if (bitmap == null) return
-
-            val maskedBitmap = when {
-                label.startsWith("Aadhaar") -> aadhaarMasker.mask(bitmap)
-                label == "PAN Card"         -> panMasker.mask(bitmap)
-                else                        -> return
-            }
-
-            if (maskedBitmap !== bitmap) {
-                when (uri.scheme) {
-                    "file" -> File(uri.path!!).outputStream().use {
-                        maskedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)
-                    }
-                    "content" -> appContext.contentResolver.openOutputStream(uri, "wt")?.use {
-                        maskedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)
-                    }
-                    else -> File(imagePath).outputStream().use {
-                        maskedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("AllDocumentsVM", "Masking on type change failed", e)
-        }
-    }
-
-    fun updateClassification(document: Document, label: String) {
-        viewModelScope.launch { documentRepository.updateClassification(document.id, label) }
-    }
 }

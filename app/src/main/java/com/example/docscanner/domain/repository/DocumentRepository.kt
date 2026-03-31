@@ -1,7 +1,9 @@
 package com.example.docscanner.domain.repository
 
+import com.example.docscanner.data.local.dao.DocGroupDao
 import com.example.docscanner.data.local.dao.DocumentDao
 import com.example.docscanner.data.local.dao.FolderDao
+import com.example.docscanner.data.local.entity.DocGroupEntity
 import com.example.docscanner.data.local.entity.DocumentEntity
 import com.example.docscanner.domain.model.Document
 import kotlinx.coroutines.flow.Flow
@@ -11,20 +13,17 @@ import javax.inject.Singleton
 
 @Singleton
 class DocumentRepository @Inject constructor(
-    private val documentDao: DocumentDao,
-    private val folderDao  : FolderDao
+    private val documentDao : DocumentDao,
+    private val folderDao   : FolderDao,
+    private val docGroupDao : DocGroupDao       // ← new
 ) {
-    // ── Existing (untouched) ──────────────────────────────────────────────────
+    // ── Existing ──────────────────────────────────────────────────────────────
 
     fun getDocuments(folderId: String): Flow<List<Document>> =
-        documentDao.getDocumentsByFolder(folderId).map { entities ->
-            entities.map { it.toDomain() }
-        }
+        documentDao.getDocumentsByFolder(folderId).map { it.map { e -> e.toDomain() } }
 
     fun getAllDocuments(): Flow<List<Document>> =
-        documentDao.getAllDocuments().map { entities ->
-            entities.map { it.toDomain() }
-        }
+        documentDao.getAllDocuments().map { it.map { e -> e.toDomain() } }
 
     suspend fun getDocumentsByIds(documentIds: List<String>): List<Document> =
         documentDao.getDocumentsByIds(documentIds).map { it.toDomain() }
@@ -63,22 +62,12 @@ class DocumentRepository @Inject constructor(
         documentDao.restoreMergedSources(documentIds)
     }
 
-    // ── New session-aware methods ─────────────────────────────────────────────
-
-    /** Unfoldered docs scoped to a session — for AllDocumentsScreen */
     fun getDocumentsForSession(sessionId: String): Flow<List<Document>> =
-        documentDao.getDocumentsForSession(sessionId).map { entities ->
-            entities.map { it.toDomain() }
-        }
+        documentDao.getDocumentsForSession(sessionId).map { it.map { e -> e.toDomain() } }
 
-    /** Folder docs scoped to a session — for FolderDetailScreen */
-    fun getDocumentsByFolderAndSession(
-        sessionId: String,
-        folderId: String
-    ): Flow<List<Document>> =
-        documentDao.getDocumentsByFolderAndSession(sessionId, folderId).map { entities ->
-            entities.map { it.toDomain() }
-        }
+    fun getDocumentsByFolderAndSession(sessionId: String, folderId: String): Flow<List<Document>> =
+        documentDao.getDocumentsByFolderAndSession(sessionId, folderId)
+            .map { it.map { e -> e.toDomain() } }
 
     suspend fun deleteAllDocumentsForSession(sessionId: String) {
         documentDao.deleteAllDocumentsForSession(sessionId)
@@ -104,6 +93,30 @@ class DocumentRepository @Inject constructor(
 
     suspend fun getGroupIdsForType(docType: String, sessionId: String): List<String> =
         documentDao.getGroupIdsForType(docType, sessionId)
+
+    // ── Doc group name CRUD ───────────────────────────────────────────────────
+
+    fun getAllDocGroups(): Flow<List<DocGroupEntity>> =
+        docGroupDao.getAllGroups()
+
+    suspend fun createDocGroup(groupId: String, name: String) {
+        docGroupDao.insertGroup(
+            DocGroupEntity(id = groupId, name = name, createdAt = System.currentTimeMillis())
+        )
+    }
+
+    suspend fun renameDocGroup(groupId: String, name: String) {
+        docGroupDao.renameGroup(groupId, name)
+    }
+
+    suspend fun deleteDocGroup(groupId: String) {
+        docGroupDao.deleteGroup(groupId)
+    }
+
+    suspend fun pruneOrphanedGroups(activeGroupIds: List<String>) {
+        if (activeGroupIds.isEmpty()) return
+        docGroupDao.deleteOrphanedGroups(activeGroupIds)
+    }
 }
 
 // ── Mappers ───────────────────────────────────────────────────────────────────
@@ -122,7 +135,7 @@ fun DocumentEntity.toDomain() = Document(
     sessionId             = sessionId,
     aadhaarSide           = aadhaarSide,
     aadhaarGroupId        = aadhaarGroupId,
-    docGroupId            = docGroupId,     // ← add
+    docGroupId            = docGroupId,
 )
 
 fun Document.toEntity() = DocumentEntity(
@@ -139,5 +152,5 @@ fun Document.toEntity() = DocumentEntity(
     sessionId             = sessionId,
     aadhaarSide           = aadhaarSide,
     aadhaarGroupId        = aadhaarGroupId,
-    docGroupId            = docGroupId,     // ← add
+    docGroupId            = docGroupId,
 )

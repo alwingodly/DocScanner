@@ -8,6 +8,7 @@ import com.example.docscanner.data.local.dao.FolderDao
 import com.example.docscanner.data.local.dao.AppDatabase
 import com.example.docscanner.data.local.dao.ApplicationDocumentDao
 import com.example.docscanner.data.local.dao.ApplicationSessionDao
+import com.example.docscanner.data.local.dao.DocGroupDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -45,5 +46,9 @@ object DatabaseModule {
     @Provides
     fun provideApplicationDocumentDao(db: AppDatabase): ApplicationDocumentDao =
         db.applicationDocumentDao()
+
+    @Provides
+    fun provideDocGroupDao(db: AppDatabase): DocGroupDao = db.docGroupDao()
+
 
 }

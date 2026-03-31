@@ -121,7 +121,9 @@ fun AllDocumentsScreen(
     var showMoveSheet by remember { mutableStateOf(false) }
     val aadhaarGroups by viewModel.aadhaarGroups.collectAsState()
     val docGroups by viewModel.docGroups.collectAsState()
-
+    var showGroupNameDialog by remember { mutableStateOf(false) }
+    var pendingGroupDocIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var groupNameText by remember { mutableStateOf("") }
 
 
     val contextAadhaarGroup = remember(contextDoc, aadhaarGroups) {
@@ -152,6 +154,10 @@ fun AllDocumentsScreen(
     var typeChangeDoc by remember { mutableStateOf<Document?>(null) }
     val sheetState = rememberModalBottomSheetState()
     var collapsedSections by remember { mutableStateOf(setOf<String>()) }
+    var contextGroupId by remember { mutableStateOf<String?>(null) }
+    var showGroupRenameDialog by remember { mutableStateOf(false) }
+    var groupRenameText by remember { mutableStateOf("") }
+    val docGroupNames by viewModel.docGroupNames.collectAsState()
 
     val hasFolders = filteredGrouped.isNotEmpty()
 
@@ -185,6 +191,7 @@ fun AllDocumentsScreen(
         when {
             isLoading -> Unit
             !hasFolders && documents.isEmpty() -> EmptyState(showUnclassifiedOnly)
+
 //            isSelectMode -> GallerySelectGrid(
 //                documents = documents,
 //                selectedIds = selectedIds,
@@ -239,6 +246,8 @@ fun AllDocumentsScreen(
                 onGroupTap = onGroupTap,
                 docGroups = docGroups,
                 selectedOrder = selectedOrder,
+                onGroupMoreTap = { groupId -> contextGroupId = groupId },
+                docGroupNames = docGroupNames
             )
         }
 
@@ -278,13 +287,9 @@ fun AllDocumentsScreen(
                             .clip(RoundedCornerShape(14.dp))
                             .background(Color(0xFF059669))
                             .clickable {
-                                viewModel.createGroupFromDocs(selectedOrder)
-                                onSelectToggle()
-                                Toast.makeText(
-                                    context,
-                                    "Grouped ${selectedOrder.size} documents",
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                                pendingGroupDocIds = selectedOrder.toList()
+                                groupNameText = ""
+                                showGroupNameDialog = true
                             },
                         contentAlignment = Alignment.Center
                     ) {
@@ -1331,7 +1336,221 @@ fun AllDocumentsScreen(
             }
         }
     }
+
+    // ── Group context sheet ───────────────────────────────────────────────────────
+    if (contextGroupId != null && !showGroupRenameDialog) {
+        val groupId   = contextGroupId!!
+        val groupName = docGroupNames[groupId] ?: "Group"
+        val groupDocs = viewModel.docGroups.collectAsState().value[groupId] ?: emptyList()
+
+        ModalBottomSheet(
+            onDismissRequest = { contextGroupId = null },
+            containerColor   = BgCard,
+            shape            = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = {
+                Box(
+                    Modifier
+                        .padding(top = 12.dp, bottom = 4.dp)
+                        .width(40.dp).height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(StrokeMid)
+                )
+            }
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 40.dp)) {
+
+                // Header
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier.size(42.dp).clip(RoundedCornerShape(10.dp))
+                            .background(Coral.copy(0.1f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.CreateNewFolder, null,
+                            tint = Coral, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(groupName, color = Ink, fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis)
+                        Text("${groupDocs.size} document${if (groupDocs.size != 1) "s" else ""}",
+                            color = InkDim, fontSize = 12.sp)
+                    }
+                }
+
+                HorizontalDivider(color = StrokeLight, thickness = 0.5.dp)
+
+                // Rename
+                ContextAction(
+                    icon  = Icons.Default.DriveFileRenameOutline,
+                    label = "Rename group",
+                    color = Color(0xFF2563EB)
+                ) {
+                    groupRenameText = groupName
+                    showGroupRenameDialog = true
+                }
+
+                HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                    modifier = Modifier.padding(horizontal = 20.dp))
+
+                // Disband
+                ContextAction(
+                    icon  = Icons.Default.LinkOff,
+                    label = "Disband group",
+                    color = InkMid
+                ) {
+                    viewModel.disbandGroup(groupId)
+                    Toast.makeText(context, "Group disbanded", Toast.LENGTH_SHORT).show()
+                    contextGroupId = null
+                }
+
+                HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                    modifier = Modifier.padding(horizontal = 20.dp))
+
+                // Delete entire group
+                ContextAction(
+                    icon  = Icons.Default.DeleteOutline,
+                    label = "Delete all ${groupDocs.size} documents",
+                    color = DangerRed
+                ) {
+                    viewModel.deleteEntireGroup(groupId)
+                    Toast.makeText(context, "Group deleted", Toast.LENGTH_SHORT).show()
+                    contextGroupId = null
+                }
+            }
+        }
+    }
+
+// ── Group rename dialog ───────────────────────────────────────────────────────
+    if (showGroupRenameDialog && contextGroupId != null) {
+        AlertDialog(
+            onDismissRequest = { showGroupRenameDialog = false },
+            containerColor   = BgCard,
+            shape            = RoundedCornerShape(20.dp),
+            title = {
+                Text("Rename group", color = Ink,
+                    fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            },
+            text = {
+                OutlinedTextField(
+                    value         = groupRenameText,
+                    onValueChange = { groupRenameText = it },
+                    singleLine    = true,
+                    label         = { Text("Group name") },
+                    shape         = RoundedCornerShape(12.dp),
+                    modifier      = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (groupRenameText.isBlank()) BgSurface else Coral)
+                        .clickable(enabled = groupRenameText.isNotBlank()) {
+                            viewModel.renameDocGroup(contextGroupId!!, groupRenameText.trim())
+                            showGroupRenameDialog = false
+                            contextGroupId = null
+                        }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text("Rename",
+                        color = if (groupRenameText.isBlank()) InkDim else Color.White,
+                        fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+            },
+            dismissButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BgSurface)
+                        .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
+                        .clickable { showGroupRenameDialog = false }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text("Cancel", color = InkMid, fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium)
+                }
+            }
+        )
+    }
+
+    // ── Group name dialog ─────────────────────────────────────────────────────────
+    if (showGroupNameDialog) {
+        AlertDialog(
+            onDismissRequest = { showGroupNameDialog = false },
+            containerColor   = BgCard,
+            shape            = RoundedCornerShape(20.dp),
+            title = {
+                Text("Name this group", color = Ink,
+                    fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "Grouping ${pendingGroupDocIds.size} documents",
+                        color = InkDim, fontSize = 13.sp
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value         = groupNameText,
+                        onValueChange = { groupNameText = it },
+                        singleLine    = true,
+                        label         = { Text("Group name") },
+                        placeholder   = { Text("e.g. Passport Set") },
+                        shape         = RoundedCornerShape(12.dp),
+                        modifier      = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (groupNameText.isBlank()) BgSurface else Coral)
+                        .clickable(enabled = groupNameText.isNotBlank()) {
+                            viewModel.createGroupFromDocs(
+                                pendingGroupDocIds,
+                                groupNameText.trim()        // ← pass name
+                            )
+                            showGroupNameDialog = false
+                            groupNameText      = ""
+                            pendingGroupDocIds = emptyList()
+                            onSelectToggle()
+                            Toast.makeText(
+                                context,
+                                "Group \"${groupNameText.trim()}\" created",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text("Create",
+                        color = if (groupNameText.isBlank()) InkDim else Color.White,
+                        fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+            },
+            dismissButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BgSurface)
+                        .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
+                        .clickable { showGroupNameDialog = false }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text("Cancel", color = InkMid, fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium)
+                }
+            }
+        )
+    }
 }
+
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // GALLERY SECTIONED GRID
@@ -1363,7 +1582,9 @@ private fun GallerySectionedGrid(
     onGroupTap: (String) -> Unit = {},
     docGroups: Map<String, List<Document>> = emptyMap(),
     selectedOrder: List<String> = emptyList(),
-    ) {
+    onGroupMoreTap: (groupId: String) -> Unit = {},
+    docGroupNames: Map<String, String> = emptyMap(),
+) {
     // label == folder.name (groupedByDocType keys by folder.name)
     val folderByName = remember(allFolders) { allFolders.associateBy { it.name } }
 
@@ -1430,7 +1651,10 @@ private fun GallerySectionedGrid(
                             selectedIds     = selectedIds,
                             onSelect        = onSelect,
                             onGroupTap      = onGroupTap,
-                            docGroups       = docGroups
+                            docGroups       = docGroups,
+                            selectedOrder   = selectedOrder,
+                            onGroupMoreTap = onGroupMoreTap,
+                            docGroupNames = docGroupNames
                         )
                     }
                 }
@@ -1567,25 +1791,26 @@ private fun GalleryPhotoGrid(
     onMoreTap: (Document) -> Unit,
     onScanTap: () -> Unit,
     isSelectMode: Boolean = false,
-    selectedOrder: List<String> = emptyList(),   // ← new
+    selectedOrder: List<String> = emptyList(),
     selectedIds: Set<String> = emptySet(),
     onSelect: (String) -> Unit = {},
     onGroupTap: (String) -> Unit = {},
     docGroups: Map<String, List<Document>> = emptyMap(),
-) {
+    onGroupMoreTap: (groupId: String) -> Unit = {},
+    docGroupNames:Map<String, String> = emptyMap(),
+    ) {
     val cardPos = remember { HashMap<Int, CardPos>() }
     var dragState by remember { mutableStateOf(DragState()) }
     val renderedDocs = remember(docs, docGroups) {
         val seenGroupIds = mutableSetOf<String>()
         docs.filter { doc ->
             val gid = doc.docGroupId
-            if (gid == null) true   // ungrouped — always show
-            else seenGroupIds.add(gid)  // first doc of group passes, rest filtered
+            if (gid == null) true
+            else seenGroupIds.add(gid)
         }
     }
 
     val allItems: List<Document?> = listOf(null) + renderedDocs
-    // null sentinel at index 0 = ScanTile, real docs start at index 1
     val rows = remember(allItems, columnCount) { allItems.chunked(columnCount) }
     val gap = 4.dp
 
@@ -1600,7 +1825,7 @@ private fun GalleryPhotoGrid(
                         ScanTile(modifier = Modifier.weight(1f), onClick = onScanTap)
                     } else {
                         val flatIdx = rowIdx * columnCount + colIdx
-                        val docIdx = flatIdx - 1  // offset for scan tile sentinel
+                        val docIdx = flatIdx - 1
 
                         val isDragging by remember(docIdx) {
                             derivedStateOf { dragState.idx == docIdx }
@@ -1622,6 +1847,7 @@ private fun GalleryPhotoGrid(
                             doc.docGroupId?.let { docGroups[it] } ?: emptyList()
                         }
                         val isGrouped = doc.docGroupId != null
+
                         Box(
                             Modifier
                                 .weight(1f)
@@ -1639,7 +1865,6 @@ private fun GalleryPhotoGrid(
                                     this.translationX = tx
                                     this.translationY = ty
                                 }
-                                // Long press = drag only, 3-dot handles context menu
                                 .pointerInput(doc.id) {
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = { dragState = DragState(idx = docIdx) },
@@ -1664,10 +1889,7 @@ private fun GalleryPhotoGrid(
                                                             val dy = q.cy - dcy
                                                             dx * dx + dy * dy
                                                         }?.key ?: cur.idx
-                                                    if (target != cur.idx) onReorder(
-                                                        cur.idx,
-                                                        target
-                                                    )
+                                                    if (target != cur.idx) onReorder(cur.idx, target)
                                                 }
                                             }
                                             dragState = DragState()
@@ -1678,24 +1900,25 @@ private fun GalleryPhotoGrid(
                         ) {
                             if (isSelectMode) {
                                 val orderNumber = if (doc.id in selectedIds)
-                                    selectedOrder.indexOf(doc.id) + 1   // 1-based
+                                    selectedOrder.indexOf(doc.id) + 1  // ← now correct
                                 else null
                                 SelectTile(
                                     doc         = doc,
                                     isSelected  = doc.id in selectedIds,
-                                    orderNumber = orderNumber,           // ← pass order
+                                    orderNumber = orderNumber,
                                     onTap       = { onSelect(doc.id) }
                                 )
                             } else if (isGrouped) {
                                 GroupedTile(
-                                    docs    = groupDocs.sortedByDescending { it.createdAt },
-                                    onTap   = { onGroupTap(doc.docGroupId!!) },
-                                    onMoreTap = { onMoreTap(doc) }
+                                    docs      = groupDocs.sortedByDescending { it.createdAt },
+                                    groupName = docGroupNames[doc.docGroupId] ?: "Group",
+                                    onTap     = { onGroupTap(doc.docGroupId!!) },
+                                    onMoreTap = { onGroupMoreTap(doc.docGroupId!!) }
                                 )
                             } else {
                                 GalleryTile(
-                                    doc       = doc,
-                                    onTap     = { onDocumentClick(doc) },
+                                    doc        = doc,
+                                    onTap      = { onDocumentClick(doc) },
                                     onBadgeTap = { onBadgeTap(doc) },
                                     onMoreTap  = { onMoreTap(doc) },
                                 )
@@ -2526,6 +2749,7 @@ private fun UnpairedAadhaarTile(
 @Composable
 private fun GroupedTile(
     docs     : List<Document>,
+    groupName : String,
     onTap    : () -> Unit,
     onMoreTap: () -> Unit,
 ) {
@@ -2611,7 +2835,7 @@ private fun GroupedTile(
             )
 
             Text(
-                primary?.name ?: "",
+                groupName,
                 color = Color.White, fontSize = 9.sp,
                 fontWeight = FontWeight.Medium, maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
