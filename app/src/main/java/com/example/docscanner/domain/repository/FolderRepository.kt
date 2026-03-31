@@ -19,20 +19,34 @@ sealed class FolderResult {
 }
 
 fun ApiFolderDto.toEntity(sessionId: String? = null) = FolderEntity(
-    id        = if (sessionId != null) "${sessionId}_${id}" else id,
-    name      = name,
-    icon      = icon,
+    id         = if (sessionId != null) "${sessionId}_${id}" else id,
+    name       = name,
+    icon       = icon,
     exportType = "PDF",
-    createdAt = System.currentTimeMillis(),
-    sortOrder = 0,
-    sessionId = sessionId,
-    docType   = docType                     // ← pass through
+    createdAt  = System.currentTimeMillis(),
+    sortOrder  = 0,
+    sessionId  = sessionId,
+    docType    = docType
+)
+
+private val OTHER_MANUAL_DTO = ApiFolderDto(
+    id      = "other_manual",
+    name    = "Other",
+    icon    = "🗂️",
+    docType = "Other Manual"
+)
+
+private val UNCATEGORIZED_DTO = ApiFolderDto(
+    id      = "other",
+    name    = "Uncategorized",
+    icon    = "📁",
+    docType = "Other"
 )
 
 @Singleton
 class FolderRepository @Inject constructor(
-    private val folderDao       : FolderDao,
-    private val folderApiService: FolderApiService
+    private val folderDao        : FolderDao,
+    private val folderApiService : FolderApiService
 ) {
 
     val folders: Flow<List<Folder>> = folderDao.getAllFolders().map { entities ->
@@ -42,17 +56,31 @@ class FolderRepository @Inject constructor(
     suspend fun syncFolders(): FolderResult {
         return try {
             val response = folderApiService.getFolders(null)
-            folderDao.insertFolders(response.folders.map { it.toEntity(sessionId = null) })
+            val folders = response.folders
+                .filter { it.id != "other" && it.id != "other_manual" }
+                .plus(OTHER_MANUAL_DTO)
+                .plus(UNCATEGORIZED_DTO)
+            folderDao.insertFolders(
+                folders.mapIndexed { i, dto ->
+                    dto.toEntity(sessionId = null).copy(sortOrder = i)
+                }
+            )
             FolderResult.Success
         } catch (e: Exception) {
+            folderDao.insertFolder(
+                OTHER_MANUAL_DTO.toEntity(sessionId = null).copy(sortOrder = 998)
+            )
+            folderDao.insertFolder(
+                UNCATEGORIZED_DTO.toEntity(sessionId = null).copy(sortOrder = 999)
+            )
             FolderResult.Error(e.message ?: "Unknown error")
         }
     }
 
     suspend fun reorderFolders(
-        currentFolders: List<Folder>,
-        fromIndex: Int,
-        toIndex: Int
+        currentFolders : List<Folder>,
+        fromIndex      : Int,
+        toIndex        : Int
     ) {
         if (fromIndex == toIndex) return
         if (fromIndex !in currentFolders.indices || toIndex !in currentFolders.indices) return
@@ -72,20 +100,31 @@ class FolderRepository @Inject constructor(
         }
 
     suspend fun syncFoldersForSession(
-        sessionId: String,
-        applicationType: ApplicationType
+        sessionId       : String,
+        applicationType : ApplicationType
     ): FolderResult {
         return try {
             val existing = folderDao.countFoldersForSession(sessionId)
             if (existing > 0) return FolderResult.Success
 
             val response = folderApiService.getFolders(applicationType)
-            val entities = response.folders.mapIndexed { index, dto ->
-                dto.toEntity(sessionId = sessionId).copy(sortOrder = index)
-            }
-            folderDao.insertFolders(entities)
+            val folders = response.folders
+                .filter { it.id != "other" && it.id != "other_manual" }
+                .plus(OTHER_MANUAL_DTO)
+                .plus(UNCATEGORIZED_DTO)
+            folderDao.insertFolders(
+                folders.mapIndexed { index, dto ->
+                    dto.toEntity(sessionId = sessionId).copy(sortOrder = index)
+                }
+            )
             FolderResult.Success
         } catch (e: Exception) {
+            folderDao.insertFolder(
+                OTHER_MANUAL_DTO.toEntity(sessionId = sessionId).copy(sortOrder = 998)
+            )
+            folderDao.insertFolder(
+                UNCATEGORIZED_DTO.toEntity(sessionId = sessionId).copy(sortOrder = 999)
+            )
             FolderResult.Error(e.message ?: "Unknown error")
         }
     }
@@ -105,5 +144,5 @@ fun FolderEntity.toDomain() = Folder(
         .getOrDefault(FolderExportType.PDF),
     createdAt     = createdAt,
     documentCount = documentCount,
-    docType       = docType                 // ← map through
+    docType       = docType
 )

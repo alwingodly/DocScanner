@@ -89,23 +89,14 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun onPhotoCaptured(bitmap: Bitmap, detectedCorners: DocumentCorners? = null) {
-        val pageId = UUID.randomUUID().toString()
-
+        val pageId = java.util.UUID.randomUUID().toString()
         _state.value = _state.value.copy(
-            pages = _state.value.pages + ScannedPage(
-                id             = pageId,
-                originalBitmap = bitmap
-            )
+            pages = _state.value.pages + ScannedPage(id = pageId, originalBitmap = bitmap)
         )
-
         val job = viewModelScope.launch {
-            // ML Kit already returns perspective-corrected bitmaps.
-            // Only run perspectiveTransform when caller explicitly provides corners.
-            val cropped = if (detectedCorners != null) {
-                documentProcessor.perspectiveTransform(bitmap, detectedCorners)
-            } else {
-                bitmap
-            }
+            // Restore: detect edges when no corners provided, don't pass raw bitmap to classifier
+            val corners = detectedCorners ?: documentProcessor.detectEdges(bitmap)
+            val cropped = documentProcessor.perspectiveTransform(bitmap, corners)
 
             val docType = if (_state.value.targetDocType == null) {
                 try { documentClassifier.classify(cropped) } catch (_: Exception) { null }
@@ -113,17 +104,15 @@ class ScannerViewModel @Inject constructor(
 
             updatePage(pageId) {
                 it.copy(
-                    corners        = detectedCorners,
+                    corners        = corners,
                     croppedBitmap  = cropped,
                     enhancedBitmap = cropped,
                     docClassType   = docType
                 )
             }
         }
-
-        synchronized(cropJobLock) { pendingCropJobs.add(job) }
+        synchronized(pendingCropJobs) { pendingCropJobs.add(job) }
     }
-
     fun onAutoSavePages() {
         val currentState = _state.value
         if (currentState.pages.isEmpty()) return
