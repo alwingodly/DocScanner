@@ -11,6 +11,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,6 +19,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -28,6 +31,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CallSplit
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -52,6 +57,7 @@ import coil.request.ImageRequest
 import com.example.docscanner.data.ocr.MlKitOcrHelper
 import com.example.docscanner.domain.model.DocClassType
 import com.example.docscanner.domain.model.Document
+import com.example.docscanner.domain.model.Folder
 import com.example.docscanner.presentation.alldocuments.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -67,41 +73,63 @@ import androidx.compose.foundation.layout.windowInsetsTopHeight
 enum class DocumentType { PDF, IMAGE }
 private enum class OcrState { IDLE, LOADING, SUCCESS, ERROR }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun DocumentViewerScreen(
     documentName: String,
     documentUri: String,
     documentType: DocumentType,
     document: Document? = null,
+    documents: List<Document> = emptyList(),
+    initialIndex: Int = 0,
+    allFolders: List<Folder> = emptyList(),
     onBack: () -> Unit,
-    onRename: ((String) -> Unit)? = null,
-    onChangeType: ((String) -> Unit)? = null,
-    onDelete: (() -> Unit)? = null,
-    onUnmerge: (() -> Unit)? = null
+    onRename: ((Document, String) -> Unit)? = null,
+    onChangeType: ((Document, String) -> Unit)? = null,
+    onDelete: ((Document) -> Unit)? = null,
+    onUnmerge: ((Document) -> Unit)? = null,
+    onRenameAadhaarPair: ((Document, String) -> Unit)? = null,
+    onUngroupAadhaarPair: ((Document) -> Unit)? = null
 ) {
     val context = LocalContext.current;
     val scope = rememberCoroutineScope()
-    val uri = Uri.parse(documentUri);
     val ocrHelper = remember { MlKitOcrHelper(context) }
+    val galleryDocs = remember(documents, document) {
+        if (documents.isNotEmpty()) documents else listOfNotNull(document)
+    }
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex.coerceIn(0, galleryDocs.lastIndex.coerceAtLeast(0)),
+        pageCount = { galleryDocs.size.coerceAtLeast(1) }
+    )
+    val currentDoc = galleryDocs.getOrNull(pagerState.currentPage) ?: document
+    val isAadhaarGroupedDoc = currentDoc?.aadhaarGroupId != null
+    val currentDocumentType = currentDoc?.let {
+        if (it.pdfPath != null) DocumentType.PDF else DocumentType.IMAGE
+    } ?: documentType
+    val currentUriString = currentDoc?.pdfPath ?: currentDoc?.thumbnailPath ?: documentUri
+    val currentUri = remember(currentUriString) { Uri.parse(currentUriString) }
 
     var pdfPages by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(documentType == DocumentType.PDF) }
+    var isLoading by remember { mutableStateOf(currentDocumentType == DocumentType.PDF) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(documentUri) {
-        if (documentType == DocumentType.PDF) {
+    LaunchedEffect(currentUriString, currentDocumentType) {
+        pdfPages = emptyList()
+        errorMessage = null
+        if (currentDocumentType == DocumentType.PDF) {
             isLoading = true; try {
-                pdfPages = renderPdfPages(context, uri)
+                pdfPages = renderPdfPages(context, currentUri)
             } catch (e: Exception) {
                 errorMessage = "Cannot open PDF: ${e.message}"
             }; isLoading = false
+        } else {
+            isLoading = false
         }
     }
 
     val listState = rememberLazyListState()
     val currentPage by remember { derivedStateOf { listState.firstVisibleItemIndex + 1 } }
-    val totalPages = if (documentType == DocumentType.PDF) pdfPages.size else 1
+    val totalPages = if (currentDocumentType == DocumentType.PDF) pdfPages.size else 1
 
     var scale by remember { mutableFloatStateOf(1f) };
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -112,16 +140,20 @@ fun DocumentViewerScreen(
     var showOcrSheet by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) };
     var showRenameDialog by remember { mutableStateOf(false) };
+    var showRenamePairDialog by remember { mutableStateOf(false) }
+    var renamePairText by remember { mutableStateOf("") }
     var showInfoSheet by remember { mutableStateOf(false) };
     var showChangeTypeSheet by remember { mutableStateOf(false) };
+    var showMoveSheet by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    val shouldShowViewerMenu = currentDoc != null
 
     fun runOcr() {
         showOcrSheet = true; ocrState = OcrState.LOADING; ocrText = ""; ocrError = ""
         scope.launch {
-            when (documentType) {
+            when (currentDocumentType) {
                 DocumentType.IMAGE -> {
-                    val bmp = loadBitmapFromUri(context, uri); if (bmp == null) {
+                    val bmp = loadBitmapFromUri(context, currentUri); if (bmp == null) {
                         ocrError = "Could not load image."; ocrState = OcrState.ERROR; return@launch
                     }; ocrHelper.extractText(bmp).onSuccess { t ->
                         ocrText = t.ifBlank { "No text found." }; ocrState = OcrState.SUCCESS
@@ -161,24 +193,43 @@ fun DocumentViewerScreen(
             ClipData.newPlainText("Extracted Text", ocrText)
         )
         })
-    if (showRenameDialog && onRename != null) RenameDialog(
-        currentName = documentName,
-        onConfirm = { newName -> onRename(newName); showRenameDialog = false },
+    if (showRenameDialog && !isAadhaarGroupedDoc && onRename != null && currentDoc != null) RenameDialog(
+        currentName = currentDoc.name,
+        onConfirm = { newName -> onRename(currentDoc, newName); showRenameDialog = false },
         onDismiss = { showRenameDialog = false })
+    if (showRenamePairDialog && isAadhaarGroupedDoc && onRenameAadhaarPair != null && currentDoc != null) {
+        RenameDialog(
+            currentName = renamePairText,
+            onConfirm = { newName ->
+                onRenameAadhaarPair(currentDoc, newName)
+                showRenamePairDialog = false
+            },
+            onDismiss = { showRenamePairDialog = false }
+        )
+    }
     if (showInfoSheet) InfoBottomSheet(
-        documentName = documentName,
-        documentType = documentType,
-        document = document,
+        documentName = currentDoc?.name ?: documentName,
+        documentType = currentDocumentType,
+        document = currentDoc ?: document,
         totalPages = totalPages,
-        uri = documentUri,
+        uri = currentUriString,
         onDismiss = { showInfoSheet = false })
-    if (showChangeTypeSheet && onChangeType != null) ChangeTypeBottomSheet(
-        currentLabel = document?.docClassLabel,
-        onSelect = { label -> onChangeType(label); showChangeTypeSheet = false },
+    if (showChangeTypeSheet && !isAadhaarGroupedDoc && onChangeType != null && currentDoc != null) ChangeTypeBottomSheet(
+        currentLabel = currentDoc.docClassLabel,
+        onSelect = { label -> onChangeType(currentDoc, label); showChangeTypeSheet = false },
         onDismiss = { showChangeTypeSheet = false })
+    if (showMoveSheet && !isAadhaarGroupedDoc && currentDoc != null && onChangeType != null) MoveToFolderBottomSheet(
+        document = currentDoc,
+        allFolders = allFolders,
+        onSelect = { label ->
+            onChangeType(currentDoc, label)
+            showMoveSheet = false
+        },
+        onDismiss = { showMoveSheet = false }
+    )
 
     // ── Delete confirmation dialog ────────────────────────────────────────────
-    if (showDeleteDialog && onDelete != null) {
+    if (showDeleteDialog && !isAadhaarGroupedDoc && onDelete != null && currentDoc != null) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             containerColor = BgCard,
@@ -197,7 +248,7 @@ fun DocumentViewerScreen(
                         .clip(RoundedCornerShape(10.dp))
                         .background(DangerRed.copy(0.10f))
                         .border(1.dp, DangerRed.copy(0.30f), RoundedCornerShape(10.dp))
-                        .clickable { showDeleteDialog = false; onDelete() }
+                        .clickable { showDeleteDialog = false; onDelete(currentDoc) }
                         .padding(horizontal = 16.dp, vertical = 9.dp)
                 ) {
                     Text(
@@ -251,21 +302,25 @@ fun DocumentViewerScreen(
                     }
                     Column(Modifier.weight(1f)) {
                         Text(
-                            documentName,
+                            currentDoc?.name ?: documentName,
                             color = Ink,
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        if (totalPages > 1) Text(
-                            "Page $currentPage of $totalPages",
+                        Text(
+                            when {
+                                galleryDocs.size > 1 -> "${pagerState.currentPage + 1} of ${galleryDocs.size}"
+                                totalPages > 1 -> "Page $currentPage of $totalPages"
+                                else -> currentDoc?.docClassLabel ?: ""
+                            },
                             color = InkMid,
                             fontSize = 11.sp
                         )
                     }
                     val contentReady =
-                        !isLoading && errorMessage == null && (documentType == DocumentType.IMAGE || (documentType == DocumentType.PDF && pdfPages.isNotEmpty()))
+                        !isLoading && errorMessage == null && (currentDocumentType == DocumentType.IMAGE || (currentDocumentType == DocumentType.PDF && pdfPages.isNotEmpty()))
                     if (contentReady) {
                         val scanning = ocrState == OcrState.LOADING
                         Box(
@@ -309,101 +364,14 @@ fun DocumentViewerScreen(
                         }
                         Spacer(Modifier.width(4.dp))
                     }
-                    Box {
-                        IconButton(onClick = { showMoreMenu = true }) {
-                            Icon(
-                                Icons.Default.MoreVert,
-                                "More",
-                                tint = Ink
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showMoreMenu,
-                            onDismissRequest = { showMoreMenu = false },
-                            containerColor = BgCard
-                        ) {
-                            if (onRename != null) DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        "Rename",
-                                        color = Ink,
-                                        fontSize = 14.sp
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.Edit,
-                                        null,
-                                        tint = InkMid,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                onClick = { showMoreMenu = false; showRenameDialog = true })
-                            if (onChangeType != null) DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        "Change Type",
-                                        color = Ink,
-                                        fontSize = 14.sp
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.Label,
-                                        null,
-                                        tint = InkMid,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                onClick = { showMoreMenu = false; showChangeTypeSheet = true })
-                            DropdownMenuItem(
-                                text = { Text("Info", color = Ink, fontSize = 14.sp) },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.Info,
-                                        null,
-                                        tint = InkMid,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                onClick = { showMoreMenu = false; showInfoSheet = true })
-                            if (document?.isMergedPdf == true && onUnmerge != null) {
-                                HorizontalDivider(color = StrokeLight); DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "Unmerge",
-                                            color = Color(0xFFE6A23C),
-                                            fontSize = 14.sp
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.CallSplit,
-                                            null,
-                                            tint = Color(0xFFE6A23C),
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    onClick = { showMoreMenu = false; onUnmerge() })
-                            }
-                            if (onDelete != null) {
-                                HorizontalDivider(color = StrokeLight); DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "Delete",
-                                            color = DangerRed,
-                                            fontSize = 14.sp
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Default.Delete,
-                                            null,
-                                            tint = DangerRed,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    onClick = { showMoreMenu = false; showDeleteDialog = true })
+                    if (shouldShowViewerMenu) {
+                        Box {
+                            IconButton(onClick = { showMoreMenu = true }) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    "More",
+                                    tint = Ink
+                                )
                             }
                         }
                     }
@@ -442,7 +410,7 @@ fun DocumentViewerScreen(
                             .padding(24.dp)
                     )
 
-                    documentType == DocumentType.PDF && pdfPages.isNotEmpty() -> {
+                    currentDocumentType == DocumentType.PDF && pdfPages.isNotEmpty() -> {
                         Box(
                             Modifier
                                 .fillMaxSize()
@@ -509,7 +477,80 @@ fun DocumentViewerScreen(
                         ) { Text("${(scale * 100).toInt()}%", color = InkMid, fontSize = 12.sp) }
                     }
 
-                    documentType == DocumentType.IMAGE -> ZoomableImage(uri = uri)
+                    currentDocumentType == DocumentType.IMAGE && galleryDocs.size > 1 -> {
+                        HorizontalPager(
+                            state = pagerState,
+                            modifier = Modifier.fillMaxSize()
+                        ) { page ->
+                            val pageUri = galleryDocs.getOrNull(page)?.thumbnailPath?.let(Uri::parse) ?: currentUri
+                            GalleryPagerImage(uri = pageUri)
+                        }
+                        PageBadge(
+                            current = pagerState.currentPage + 1,
+                            total = galleryDocs.size,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(top = 10.dp, end = 10.dp)
+                        )
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 18.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(BgCard.copy(alpha = 0.92f))
+                                    .border(1.dp, StrokeLight, CircleShape)
+                                    .clickable(enabled = pagerState.currentPage > 0) {
+                                        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                                    null,
+                                    tint = if (pagerState.currentPage > 0) Ink else InkDim
+                                )
+                            }
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(BgCard.copy(alpha = 0.92f))
+                                    .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    "Swipe",
+                                    color = InkMid,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            Box(
+                                Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(BgCard.copy(alpha = 0.92f))
+                                    .border(1.dp, StrokeLight, CircleShape)
+                                    .clickable(enabled = pagerState.currentPage < galleryDocs.lastIndex) {
+                                        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    null,
+                                    tint = if (pagerState.currentPage < galleryDocs.lastIndex) Ink else InkDim
+                                )
+                            }
+                        }
+                    }
+
+                    currentDocumentType == DocumentType.IMAGE -> ZoomableImage(uri = currentUri)
                     else -> Text(
                         "No content to display",
                         color = InkMid,
@@ -519,10 +560,349 @@ fun DocumentViewerScreen(
             }
         }
     }
+
+    if (shouldShowViewerMenu && showMoreMenu && currentDoc != null) {
+        val currentLabel = currentDoc.docClassLabel ?: "Other"
+        ModalBottomSheet(
+            onDismissRequest = { showMoreMenu = false },
+            containerColor = BgCard,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = {
+                Box(
+                    Modifier
+                        .padding(top = 12.dp, bottom = 4.dp)
+                        .width(40.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(StrokeMid)
+                )
+            }
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 40.dp)
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(BgSurface)
+                            .border(1.dp, StrokeLight, RoundedCornerShape(10.dp))
+                    ) {
+                        if (currentDoc.thumbnailPath != null) {
+                            AsyncImage(
+                                model = currentDoc.thumbnailPath,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.Image,
+                                null,
+                                tint = InkDim,
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .size(22.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            currentDoc.name,
+                            color = Ink,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(TypeColors[currentLabel] ?: InkMid)
+                            )
+                            Text(currentLabel, color = InkMid, fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = StrokeLight, thickness = 0.5.dp)
+
+                if (isAadhaarGroupedDoc && onRenameAadhaarPair != null) {
+                    ContextAction(
+                        icon = Icons.Default.DriveFileRenameOutline,
+                        label = "Rename pair",
+                        color = Color(0xFF2563EB)
+                    ) {
+                        renamePairText = currentDoc.name
+                            .substringBefore("_Aadhaar")
+                            .replace("_", " ")
+                        showMoreMenu = false
+                        showRenamePairDialog = true
+                    }
+
+                    HorizontalDivider(
+                        color = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                }
+
+                if (!isAadhaarGroupedDoc && onRename != null) {
+                    ContextAction(
+                        icon = Icons.Default.DriveFileRenameOutline,
+                        label = "Rename",
+                        color = Color(0xFF2563EB)
+                    ) {
+                        showMoreMenu = false
+                        showRenameDialog = true
+                    }
+
+                    HorizontalDivider(
+                        color = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                }
+
+                if (!isAadhaarGroupedDoc && onChangeType != null) {
+                    ContextAction(
+                        icon = Icons.Default.DriveFileMove,
+                        label = "Move to folder",
+                        color = Coral,
+                        trailing = {
+                            Icon(
+                                Icons.Default.ChevronRight,
+                                null,
+                                tint = InkDim,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    ) {
+                        showMoreMenu = false
+                        showMoveSheet = true
+                    }
+
+                    HorizontalDivider(
+                        color = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+
+                    ContextAction(
+                        icon = Icons.Default.Label,
+                        label = "Change type",
+                        color = Color(0xFF7C3AED)
+                    ) {
+                        showMoreMenu = false
+                        showChangeTypeSheet = true
+                    }
+
+                    HorizontalDivider(
+                        color = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                }
+
+                ContextAction(
+                    icon = Icons.Default.Info,
+                    label = "Info",
+                    color = InkMid
+                ) {
+                    showMoreMenu = false
+                    showInfoSheet = true
+                }
+
+                if (isAadhaarGroupedDoc && onUngroupAadhaarPair != null) {
+                    HorizontalDivider(
+                        color = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                    ContextAction(
+                        icon = Icons.Default.LinkOff,
+                        label = "Ungroup pair",
+                        color = InkMid
+                    ) {
+                        showMoreMenu = false
+                        onUngroupAadhaarPair(currentDoc)
+                    }
+                }
+
+                if (currentDoc.isMergedPdf && onUnmerge != null) {
+                    HorizontalDivider(
+                        color = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                    ContextAction(
+                        icon = Icons.AutoMirrored.Filled.CallSplit,
+                        label = "Unmerge",
+                        color = Color(0xFFE6A23C)
+                    ) {
+                        showMoreMenu = false
+                        onUnmerge(currentDoc)
+                    }
+                }
+
+                if (!isAadhaarGroupedDoc && onDelete != null) {
+                    HorizontalDivider(
+                        color = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                    ContextAction(
+                        icon = Icons.Default.DeleteOutline,
+                        label = "Delete",
+                        color = DangerRed
+                    ) {
+                        showMoreMenu = false
+                        showDeleteDialog = true
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ── Change Type sheet ─────────────────────────────────────────────────────────
 private val SelectBlue = Color(0xFF2E6BE6)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MoveToFolderBottomSheet(
+    document: Document,
+    allFolders: List<Folder>,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val currentLabel = document.docClassLabel ?: "Other"
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = BgCard,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            Box(
+                Modifier
+                    .padding(top = 12.dp, bottom = 4.dp)
+                    .width(40.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(StrokeMid)
+            )
+        }
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(bottom = 40.dp)
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    null,
+                    tint = Ink,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .clickable { onDismiss() }
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "Move to folder",
+                    color = Ink,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            HorizontalDivider(color = StrokeLight, thickness = 0.5.dp)
+
+            Text(
+                "FOLDERS",
+                color = InkDim,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+            )
+
+            allFolders.forEach { folder ->
+                val isCurrent = folder.docType == currentLabel
+                val folderColor = TypeColors[folder.docType] ?: InkMid
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .then(if (isCurrent) Modifier.background(folderColor.copy(0.07f)) else Modifier)
+                        .clickable {
+                            if (!isCurrent) onSelect(folder.docType)
+                            else onDismiss()
+                        }
+                        .padding(horizontal = 20.dp, vertical = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Box(
+                        Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(folderColor.copy(0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(folder.icon, fontSize = 17.sp)
+                    }
+
+                    Text(
+                        folder.name,
+                        color = if (isCurrent) folderColor else Ink,
+                        fontSize = 15.sp,
+                        fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    if (isCurrent) {
+                        Box(
+                            Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .background(folderColor.copy(0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Check,
+                                null,
+                                tint = folderColor,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1003,6 +1383,21 @@ private fun ZoomableImage(uri: Uri) {
             .border(1.dp, StrokeLight, RoundedCornerShape(8.dp))
             .padding(horizontal = 10.dp, vertical = 5.dp)
     ) { Text("${(scale * 100).toInt()}%", color = InkMid, fontSize = 12.sp) }
+    }
+}
+
+@Composable
+private fun GalleryPagerImage(uri: Uri) {
+    Box(
+        Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        AsyncImage(
+            model = uri,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize()
+        )
     }
 }
 

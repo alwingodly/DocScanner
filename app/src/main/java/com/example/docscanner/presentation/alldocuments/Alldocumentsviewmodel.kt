@@ -101,11 +101,17 @@ class AllDocumentsViewModel @Inject constructor(
                         .maxByOrNull { it.createdAt }
                     val back  = groupDocs.filter { it.aadhaarSide == "BACK" }
                         .maxByOrNull { it.createdAt }
+
+                    // ── Always prefer front doc name, fall back to back ──────────
+                    val holderName = (front ?: back)
+                        ?.name
+                        ?.substringBefore("_Aadhaar")
+                        ?.replace("_", " ")
+                        ?.ifBlank { null }
+
                     AadhaarGroup(
                         groupId           = groupId,
-                        holderName        = groupDocs.firstNotNullOfOrNull {
-                            it.name.substringBefore("_Aadhaar").ifBlank { null }
-                        },
+                        holderName        = holderName,
                         frontDoc          = front,
                         backDoc           = back,
                         isManuallyGrouped = groupDocs.any {
@@ -113,10 +119,14 @@ class AllDocumentsViewModel @Inject constructor(
                         }
                     )
                 }
-                .sortedByDescending { it.frontDoc?.createdAt ?: it.backDoc?.createdAt ?: 0L }
+                .sortedByDescending {
+                    maxOf(
+                        it.frontDoc?.createdAt ?: 0L,
+                        it.backDoc?.createdAt ?: 0L
+                    )
+                }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-
     fun getGroupDocs(groupId: String): Flow<List<Document>> =
         documentRepository.getDocsByGroup(groupId)
 
@@ -341,14 +351,39 @@ class AllDocumentsViewModel @Inject constructor(
                 val groupDocs = documents.value.filter { it.docGroupId == groupId }
                 groupDocs.forEach { doc ->
                     documentRepository.updateDocClassLabel(doc.id, newLabel)
+                    syncAadhaarMetadata(doc, newLabel)
                     if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card")
                         applyMaskingIfNeeded(doc, newLabel)
                 }
             } else {
                 documentRepository.updateDocClassLabel(document.id, newLabel)
+                syncAadhaarMetadata(document, newLabel)
                 if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card")
                     applyMaskingIfNeeded(document, newLabel)
             }
+        }
+    }
+
+    private suspend fun syncAadhaarMetadata(document: Document, newLabel: String) {
+        val resolvedSide = when (newLabel) {
+            "Aadhaar Front" -> "FRONT"
+            "Aadhaar Back" -> "BACK"
+            "Aadhaar" -> document.aadhaarSide
+            else -> null
+        }
+
+        if (newLabel.startsWith("Aadhaar")) {
+            documentRepository.updateAadhaarGroup(
+                docId = document.id,
+                side = resolvedSide,
+                groupId = document.aadhaarGroupId
+            )
+        } else if (document.aadhaarSide != null || document.aadhaarGroupId != null) {
+            documentRepository.updateAadhaarGroup(
+                docId = document.id,
+                side = null,
+                groupId = null
+            )
         }
     }
 

@@ -10,6 +10,7 @@ import com.example.docscanner.data.masking.AadhaarMasker
 import com.example.docscanner.data.masking.PanMasker
 import com.example.docscanner.data.ocr.MlKitOcrHelper
 import com.example.docscanner.data.processor.DocumentProcessor
+import com.example.docscanner.data.security.AadhaarSecureHelper
 import com.example.docscanner.domain.model.DocClassType
 import com.example.docscanner.domain.model.Document
 import com.example.docscanner.domain.model.DocumentCorners
@@ -40,6 +41,7 @@ class ScannerViewModel @Inject constructor(
     private val documentRepository : DocumentRepository,
     private val documentClassifier : DocumentClassifier,
     private val ocrHelper          : MlKitOcrHelper,
+    private val secureHelper       : AadhaarSecureHelper,   // ← NEW
     private val aadhaarMasker      : AadhaarMasker,
     private val panMasker          : PanMasker
 ) : ViewModel() {
@@ -89,18 +91,15 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun onPhotoCaptured(bitmap: Bitmap, detectedCorners: DocumentCorners? = null) {
-        val pageId = java.util.UUID.randomUUID().toString()
+        val pageId = UUID.randomUUID().toString()
         _state.value = _state.value.copy(
             pages = _state.value.pages + ScannedPage(id = pageId, originalBitmap = bitmap)
         )
         val job = viewModelScope.launch {
-            // ML Kit already returns a corrected bitmap.
-            // Only run perspectiveTransform when caller explicitly provides corners
-            // (e.g. manual corner adjustment screen).
             val cropped = if (detectedCorners != null) {
                 documentProcessor.perspectiveTransform(bitmap, detectedCorners)
             } else {
-                bitmap  // ← use as-is, no second crop
+                bitmap
             }
 
             val docType = if (_state.value.targetDocType == null) {
@@ -136,21 +135,15 @@ class ScannerViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Wait for every crop coroutine to finish before reading bitmaps
                 val jobs = synchronized(cropJobLock) { pendingCropJobs.toList() }
                 Log.d("AadhaarDebug", "Waiting for ${jobs.size} crop job(s)…")
                 jobs.forEach { it.join() }
                 synchronized(cropJobLock) { pendingCropJobs.clear() }
                 Log.d("AadhaarDebug", "All crop jobs done — proceeding with save")
 
-                // Re-read state AFTER all crops are done
                 val freshState = _state.value
 
                 val savedDocInfos    = mutableListOf<SavedDocInfo>()
-                // This list grows as each page is saved. It is passed into
-                // resolveGroupId so the carry-forward step can see what groups
-                // the current batch already has, preventing N backs from all
-                // being blindly assigned to the last front when OCR is weak.
                 val savedAadhaarDocs = mutableListOf<SavedAadhaarDocInfo>()
 
                 var lastAadhaarSide     : String? = null
@@ -192,13 +185,17 @@ class ScannerViewModel @Inject constructor(
                     val originalBitmap =
                         page.enhancedBitmap ?: page.croppedBitmap ?: page.originalBitmap
 
-                    val docClassLabel    : String
-                    val smartName        : String?
-                    val saveBitmap       : Bitmap
-                    var detectedLabel    : String? = null
-                    var aadhaarSide      : String? = null
-                    var aadhaarGroupId   : String? = null
-                    var aadhaarOcrDigits : String? = null
+                    val docClassLabel  : String
+                    val smartName      : String?
+                    val saveBitmap     : Bitmap
+                    var detectedLabel  : String? = null
+                    var aadhaarSide    : String? = null
+                    var aadhaarGroupId : String? = null
+
+                    // Hashes — never store raw digits beyond this function scope
+                    var aadhaarNumHash  : String? = null   // hash of full 12 digits
+                    var aadhaarLast4Hash: String? = null   // hash of last 4 digits
+                    var aadhaarDigitLen : Int     = 0      // 12, 4, or 0 — for reconciliation logic
 
                     if (isFolderScan) {
                         val folderLabel = freshState.targetDocType!!
@@ -210,19 +207,14 @@ class ScannerViewModel @Inject constructor(
                             DocClassType.OTHER
                         }
 
-                        Log.d("AadhaarDebug", "detected: ${detected.name} | displayName: ${detected.displayName}")
-                        Log.d("AadhaarDebug", "detected.isAadhaar: ${detected.isAadhaar}")
+                        Log.d("AadhaarDebug", "detected: ${detected.name} | isAadhaar: ${detected.isAadhaar}")
                         Log.d("AadhaarDebug", "folderLabel: $folderLabel")
 
                         detectedLabel = detected.displayName
 
-                        docClassLabel = if (detected.isAadhaar) {
-                            detected.displayName
-                        } else {
-                            folderLabel
-                        }
-
-                        Log.d("AadhaarDebug", "docClassLabel (folder scan): $docClassLabel")
+                        // Keep folder scans in the chosen section until the user
+                        // resolves any mismatch from the modal.
+                        docClassLabel = folderLabel
 
                         if (detected.isAadhaar) {
                             aadhaarSide = aadhaarSideOf(detected)
@@ -234,16 +226,26 @@ class ScannerViewModel @Inject constructor(
                                 null
                             }
 
-                            aadhaarOcrDigits = ocrFields?.idNumber?.filter { it.isDigit() }
-                            aadhaarGroupId   = resolveGroupId(
-                                bitmap      = originalBitmap,
-                                detected    = detected,
-                                ocrFields   = ocrFields,
-                                inBatchDocs = savedAadhaarDocs      // ← pass running batch
+                            // Compute hashes immediately — raw digits not kept
+                            val rawDigits = ocrFields?.idNumber?.filter { it.isDigit() }
+                            if (rawDigits != null && rawDigits.length == 12) {
+                                aadhaarNumHash   = secureHelper.hashAadhaarNumber(rawDigits)
+                                aadhaarLast4Hash = secureHelper.hashLast4(rawDigits)
+                                aadhaarDigitLen  = 12
+                            } else if (rawDigits != null && rawDigits.length >= 4) {
+                                aadhaarLast4Hash = secureHelper.hashLast4(rawDigits)
+                                aadhaarDigitLen  = rawDigits.length
+                            }
+
+                            aadhaarGroupId = resolveGroupId(
+                                bitmap       = originalBitmap,
+                                detected     = detected,
+                                ocrFields    = ocrFields,
+                                inBatchDocs  = savedAadhaarDocs
                             )
 
                             Log.d("AadhaarDebug",
-                                "✓ isAadhaar=true → side: $aadhaarSide | groupId: $aadhaarGroupId | ocrDigits: $aadhaarOcrDigits")
+                                "✓ isAadhaar=true → side=$aadhaarSide | groupId=$aadhaarGroupId | digitLen=$aadhaarDigitLen")
                         } else {
                             Log.d("AadhaarDebug", "✗ isAadhaar=false → aadhaarSide=null, aadhaarGroupId=null")
                         }
@@ -260,9 +262,7 @@ class ScannerViewModel @Inject constructor(
                         }
 
                         docClassLabel = classifiedType.displayName
-
                         Log.d("AadhaarDebug", "Global scan → classifiedType: ${classifiedType.name}")
-                        Log.d("AadhaarDebug", "docClassLabel: $docClassLabel")
 
                         val ocrFields = try {
                             ocrHelper.extractFields(originalBitmap, classifiedType)
@@ -271,9 +271,7 @@ class ScannerViewModel @Inject constructor(
                             null
                         }
 
-                        Log.d("AadhaarDebug", "ocrFields.name: ${ocrFields?.name}")
-                        Log.d("AadhaarDebug", "ocrFields.idNumber: ${ocrFields?.idNumber}")
-
+                        // buildSmartName uses only last-4 of idNumber — acceptable per UIDAI masking standard
                         smartName = try {
                             buildSmartName(classifiedType, ocrFields?.name, ocrFields?.idNumber)
                         } catch (e: Exception) {
@@ -282,16 +280,26 @@ class ScannerViewModel @Inject constructor(
                         }
 
                         if (classifiedType.isAadhaar) {
-                            aadhaarSide      = aadhaarSideOf(classifiedType)
-                            aadhaarOcrDigits = ocrFields?.idNumber?.filter { it.isDigit() }
-                            aadhaarGroupId   = resolveGroupId(
+                            aadhaarSide = aadhaarSideOf(classifiedType)
+
+                            val rawDigits = ocrFields?.idNumber?.filter { it.isDigit() }
+                            if (rawDigits != null && rawDigits.length == 12) {
+                                aadhaarNumHash   = secureHelper.hashAadhaarNumber(rawDigits)
+                                aadhaarLast4Hash = secureHelper.hashLast4(rawDigits)
+                                aadhaarDigitLen  = 12
+                            } else if (rawDigits != null && rawDigits.length >= 4) {
+                                aadhaarLast4Hash = secureHelper.hashLast4(rawDigits)
+                                aadhaarDigitLen  = rawDigits.length
+                            }
+
+                            aadhaarGroupId = resolveGroupId(
                                 bitmap      = originalBitmap,
                                 detected    = classifiedType,
                                 ocrFields   = ocrFields,
-                                inBatchDocs = savedAadhaarDocs      // ← pass running batch
+                                inBatchDocs = savedAadhaarDocs
                             )
                             Log.d("AadhaarDebug",
-                                "✓ isAadhaar=true → side: $aadhaarSide | groupId: $aadhaarGroupId | ocrDigits: $aadhaarOcrDigits")
+                                "✓ isAadhaar=true → side=$aadhaarSide | groupId=$aadhaarGroupId | digitLen=$aadhaarDigitLen")
                         } else {
                             Log.d("AadhaarDebug", "✗ isAadhaar=false → resetting group state")
                             lastAadhaarGroupId = null
@@ -317,10 +325,8 @@ class ScannerViewModel @Inject constructor(
 
                     val docId = UUID.randomUUID().toString()
 
-                    Log.d("AadhaarDebug", "Saving doc → id: $docId | name: $name")
-                    Log.d("AadhaarDebug", "  docClassLabel: $docClassLabel")
-                    Log.d("AadhaarDebug", "  aadhaarSide: $aadhaarSide")
-                    Log.d("AadhaarDebug", "  aadhaarGroupId: $aadhaarGroupId")
+                    Log.d("AadhaarDebug", "Saving doc → id=$docId | name=$name")
+                    Log.d("AadhaarDebug", "  docClassLabel=$docClassLabel | aadhaarSide=$aadhaarSide | aadhaarGroupId=$aadhaarGroupId")
 
                     documentRepository.saveDocument(
                         Document(
@@ -341,10 +347,12 @@ class ScannerViewModel @Inject constructor(
                     if (aadhaarGroupId != null && aadhaarSide != null) {
                         savedAadhaarDocs.add(
                             SavedAadhaarDocInfo(
-                                documentId = docId,
-                                groupId    = aadhaarGroupId,
-                                side       = aadhaarSide,
-                                ocrDigits  = aadhaarOcrDigits
+                                documentId   = docId,
+                                groupId      = aadhaarGroupId,
+                                side         = aadhaarSide,
+                                numHash      = aadhaarNumHash,    // hash of full 12, or null
+                                last4Hash    = aadhaarLast4Hash,  // hash of last 4, or null
+                                digitLen     = aadhaarDigitLen
                             )
                         )
                     }
@@ -361,43 +369,30 @@ class ScannerViewModel @Inject constructor(
                     }
                 }
 
-                // ── Number-based reconciliation ───────────────────────────────
+                // ── Hash-based reconciliation ─────────────────────────────────
+                // Corrects group IDs when OCR was more reliable on one side than the other.
+                // Uses SHA-256 hashes — no raw digits involved.
                 if (savedAadhaarDocs.size > 1) {
-
-                    val fullNumberToGroupId = mutableMapOf<String, String>()
+                    // Build: numHash → most-confident groupId (for full-12 docs only)
+                    val hashToGroupId = mutableMapOf<String, String>()
                     savedAadhaarDocs.forEach { info ->
-                        val digits = info.ocrDigits ?: return@forEach
-                        if (digits.length == 12) {
-                            val existing = fullNumberToGroupId[digits]
-                            val isConfident = !info.groupId.startsWith("aadhaar_num_") &&
-                                    !info.groupId.startsWith("aadhaar_grp_")
-                            val existingIsConfident = existing != null &&
-                                    !existing.startsWith("aadhaar_num_") &&
-                                    !existing.startsWith("aadhaar_grp_")
-                            if (existing == null || (isConfident && !existingIsConfident)) {
-                                fullNumberToGroupId[digits] = info.groupId
-                            }
+                        val nh = info.numHash ?: return@forEach   // skip partial-OCR docs
+                        val existing           = hashToGroupId[nh]
+                        val isConfident        = isConfidentGroupId(info.groupId)
+                        val existingConfident  = existing != null && isConfidentGroupId(existing)
+                        if (existing == null || (isConfident && !existingConfident)) {
+                            hashToGroupId[nh] = info.groupId
                         }
                     }
 
-                    Log.d("AadhaarDebug", "fullNumberToGroupId: $fullNumberToGroupId")
+                    Log.d("AadhaarDebug", "reconciliation: ${hashToGroupId.size} distinct num-hash(es)")
 
                     savedAadhaarDocs.forEach { info ->
-                        val digits = info.ocrDigits ?: return@forEach
-
-                        val correctGroupId = when {
-                            digits.length == 12 -> fullNumberToGroupId[digits]
-                            digits.length >= 4  -> {
-                                val matches = fullNumberToGroupId.entries
-                                    .filter { (fullNum, _) -> fullNum.endsWith(digits) }
-                                if (matches.size == 1) matches.first().value else null
-                            }
-                            else -> null
-                        }
-
-                        if (correctGroupId != null && correctGroupId != info.groupId) {
+                        val nh = info.numHash ?: return@forEach
+                        val correctGroupId = hashToGroupId[nh] ?: return@forEach
+                        if (correctGroupId != info.groupId) {
                             Log.d("AadhaarDebug",
-                                "Number-reconcile ${info.documentId}: ${info.groupId} → $correctGroupId (digits: $digits)")
+                                "Number-reconcile ${info.documentId}: ${info.groupId} → $correctGroupId")
                             documentRepository.updateAadhaarGroupIdOnly(info.documentId, correctGroupId)
                         }
                     }
@@ -449,48 +444,55 @@ class ScannerViewModel @Inject constructor(
         inBatchDocs : List<SavedAadhaarDocInfo> = emptyList()
     ): String {
 
-        val fields = ocrFields ?: try {
-            ocrHelper.extractFields(bitmap, detected)
-        } catch (e: Exception) {
-            Log.e("AadhaarDebug", "OCR groupId failed", e)
-            null
-        }
+        val fields    = ocrFields ?: try { ocrHelper.extractFields(bitmap, detected) }
+        catch (e: Exception) { Log.e("AadhaarDebug", "OCR groupId failed", e); null }
 
-        val ocrDigits = fields?.idNumber?.filter { it.isDigit() }
+        // Raw digits — in-memory only, used to build hashes for lookups, never logged or stored
+        val rawDigits  = fields?.idNumber?.filter { it.isDigit() }
+        val numHash12  = rawDigits?.takeIf { it.length == 12 }
+            ?.let { secureHelper.hashAadhaarNumber(it) }
+        val last4Hash  = rawDigits?.takeIf { it.length >= 4 }
+            ?.let { secureHelper.hashLast4(it) }
+
         val sessionId = _state.value.sessionId
         val thisSide  = aadhaarSideOf(detected)
 
-        // Helper — fetches Aadhaar docs regardless of session
-        suspend fun fetchAadhaarDocs(): List<com.example.docscanner.domain.model.Document> =
+        Log.d("AadhaarDebug",
+            "resolveGroupId ENTER → side=$thisSide | hasName=${fields?.name != null} | digitLen=${rawDigits?.length} | inBatch=${inBatchDocs.size}")
+
+        suspend fun fetchAadhaarDocs(): List<Document> =
             try {
                 if (sessionId != null) documentRepository.getExistingAadhaarDocs(sessionId)
-                else documentRepository.getGlobalAadhaarDocs()   // ← global fallback
+                else documentRepository.getGlobalAadhaarDocs()
             } catch (e: Exception) {
-                Log.e("AadhaarDebug", "fetchAadhaarDocs failed", e)
-                emptyList()
+                Log.e("AadhaarDebug", "fetchAadhaarDocs failed", e); emptyList()
             }
 
-        // ── 1. Confident OCR (name + number) ─────────────────────────────────
+        // ── Strategy 1: confident key (name + full number, both hashed) ───────
         val confidentKey = if (fields?.name != null && fields.idNumber != null)
-            ocrHelper.buildAadhaarGroupId(fields.name, fields.idNumber)
+            ocrHelper.buildAadhaarGroupId(fields.name, fields.idNumber)   // returns hashed ID
         else null
 
-        if (confidentKey != null) {
-            val existingDocs = fetchAadhaarDocs()   // ← no sessionId gate
+        Log.d("AadhaarDebug", "S1 confidentKey=${confidentKey}")
 
-            val digits12 = ocrDigits?.takeIf { it.length == 12 }
-            if (digits12 != null) {
+        if (confidentKey != null) {
+            val existingDocs = fetchAadhaarDocs()
+            Log.d("AadhaarDebug", "S1 existingDocs count=${existingDocs.size}")
+
+            // Cross-match: another group already holds the same number hash but different name format
+            if (numHash12 != null) { //work when take picture separately
                 val crossMatch = existingDocs
-                    .mapNotNull { it.aadhaarGroupId }
-                    .distinct()
-                    .firstOrNull { gId -> gId != confidentKey && gId.contains(digits12) }
+                    .mapNotNull { it.aadhaarGroupId }.distinct()
+                    .firstOrNull { gId -> gId != confidentKey && gId.contains(numHash12) }
+                Log.d("AadhaarDebug", "S1 crossMatch=${crossMatch}")
                 if (crossMatch != null) {
                     val docsInCross  = existingDocs.filter { it.aadhaarGroupId == crossMatch }
                     val pairComplete = docsInCross.any { it.aadhaarSide == "FRONT" } &&
                             docsInCross.any { it.aadhaarSide == "BACK" }
+                    Log.d("AadhaarDebug", "S1 crossMatch pairComplete=$pairComplete $docsInCross")
                     if (!pairComplete) {
-                        anchoredGroupId    = crossMatch
-                        lastAadhaarGroupId = crossMatch
+                        Log.d("AadhaarDebug", "S1 → RETURN crossMatch")
+                        anchoredGroupId = crossMatch; lastAadhaarGroupId = crossMatch
                         return crossMatch
                     }
                 }
@@ -499,128 +501,138 @@ class ScannerViewModel @Inject constructor(
             val docsInGroup     = existingDocs.filter { it.aadhaarGroupId == confidentKey }
             val hasCompletePair = docsInGroup.any { it.aadhaarSide == "FRONT" } &&
                     docsInGroup.any { it.aadhaarSide == "BACK" }
+            Log.d("AadhaarDebug", "S1 docsInGroup=${docsInGroup.size} hasCompletePair=$hasCompletePair")
 
             if (hasCompletePair) {
                 val newKey = "${confidentKey}_${System.currentTimeMillis()}"
-                anchoredGroupId    = newKey
-                lastAadhaarGroupId = newKey
+                Log.d("AadhaarDebug", "S1 → RETURN newKey (pair full)")
+                anchoredGroupId = newKey; lastAadhaarGroupId = newKey
                 return newKey
             }
 
-            anchoredGroupId    = confidentKey
-            lastAadhaarGroupId = confidentKey
+            Log.d("AadhaarDebug", "S1 → RETURN confidentKey")
+            anchoredGroupId = confidentKey; lastAadhaarGroupId = confidentKey
             return confidentKey
         }
 
-        // ── 2. Full 12-digit DB cross-match ──────────────────────────────────
-        if (ocrDigits != null && ocrDigits.length == 12) {   // ← removed sessionId gate
-            val existingDocs   = fetchAadhaarDocs()
-            val matchedGroupId = existingDocs
-                .mapNotNull { it.aadhaarGroupId }
-                .distinct()
-                .firstOrNull { groupId -> groupId.contains(ocrDigits) }
+        Log.d("AadhaarDebug", "S1 SKIPPED (no name or no idNumber)")
 
+        // ── Strategy 2: full number hash matches an existing group ─────────────
+        if (numHash12 != null) {
+            val existingDocs   = fetchAadhaarDocs()
+            val matchedGroupId = existingDocs.mapNotNull { it.aadhaarGroupId }.distinct()
+                .firstOrNull { groupId -> groupId.contains(numHash12) }
+            Log.d("AadhaarDebug", "S2 full-hash match=${matchedGroupId != null}")
             if (matchedGroupId != null) {
                 lastAadhaarGroupId = matchedGroupId
+                Log.d("AadhaarDebug", "S2 → RETURN matched group")
                 return matchedGroupId
             }
+        } else {
+            Log.d("AadhaarDebug", "S2 SKIPPED (no full 12-digit hash)")
         }
 
-        // ── 3. Carry-forward ─────────────────────────────────────────────────
+        // ── Strategy 3: carry-forward last group if unambiguous ────────────────
+        Log.d("AadhaarDebug", "S3 hasLastGroup=${lastAadhaarGroupId != null} thisSide=$thisSide")
         if (lastAadhaarGroupId != null && thisSide != null) {
             val batchGroupsMissingThisSide = inBatchDocs
                 .groupBy { it.groupId }
                 .filter { (_, docs) -> docs.none { it.side == thisSide } }
                 .keys
-
             val unambiguous = when {
                 batchGroupsMissingThisSide.isEmpty() -> true
                 batchGroupsMissingThisSide.size == 1 &&
                         batchGroupsMissingThisSide.contains(lastAadhaarGroupId) -> true
                 else -> false
             }
-
-            if (unambiguous) return lastAadhaarGroupId!!
+            Log.d("AadhaarDebug",
+                "S3 batchGroupsMissingThisSide.size=${batchGroupsMissingThisSide.size} unambiguous=$unambiguous")
+            if (unambiguous) {
+                Log.d("AadhaarDebug", "S3 → RETURN carry-forward")
+                return lastAadhaarGroupId!!
+            }
+        } else {
+            Log.d("AadhaarDebug", "S3 SKIPPED (no lastGroupId or no thisSide)")
         }
 
-        // ── 4. Partial 4-digit DB cross-match ────────────────────────────────
-        if (ocrDigits != null && ocrDigits.length >= 4) {   // ← removed sessionId gate
+        // ── Strategy 4: last-4 hash matches exactly one existing group ─────────
+        if (last4Hash != null) {
             val existingDocs = fetchAadhaarDocs()
             val allGroupIds  = existingDocs.mapNotNull { it.aadhaarGroupId }.distinct()
-            val last4        = ocrDigits.takeLast(4)
-            val matches      = allGroupIds.filter { it.endsWith(last4) }
-
+            val matches      = allGroupIds.filter { it.contains(last4Hash) }
+            Log.d("AadhaarDebug", "S4 last4-hash matches=${matches.size}")
             if (matches.size == 1) {
                 lastAadhaarGroupId = matches.first()
+                Log.d("AadhaarDebug", "S4 → RETURN last4 match")
                 return matches.first()
+            } else {
+                Log.d("AadhaarDebug", "S4 SKIPPED matches.size=${matches.size}")
             }
+        } else {
+            Log.d("AadhaarDebug", "S4 SKIPPED (no last4 hash)")
         }
 
-        // ── 4.5 Classifier-guided incomplete group fill ───────────────────────
+        // ── Strategy 4.5: fill an incomplete pair from batch or DB ────────────
         if (thisSide != null) {
-            val batchIncomplete = inBatchDocs
-                .groupBy { it.groupId }
-                .filter { (_, docs) -> docs.none { it.side == thisSide } }
-                .keys.toList()
+            val batchIncomplete = inBatchDocs.groupBy { it.groupId }
+                .filter { (_, docs) -> docs.none { it.side == thisSide } }.keys.toList()
+            Log.d("AadhaarDebug", "S4.5 batchIncomplete=${batchIncomplete.size}")
 
             if (batchIncomplete.size == 1) {
                 lastAadhaarGroupId = batchIncomplete.first()
+                Log.d("AadhaarDebug", "S4.5 → RETURN batch fill")
                 return batchIncomplete.first()
             }
 
-            val existingDocs = fetchAadhaarDocs()
+            val existingDocs        = fetchAadhaarDocs()
             val groupsByMissingSide = existingDocs
                 .filter { it.aadhaarGroupId != null }
                 .groupBy { it.aadhaarGroupId!! }
                 .mapValues { (_, docs) ->
                     val hasFront = docs.any { it.aadhaarSide == "FRONT" }
                     val hasBack  = docs.any { it.aadhaarSide == "BACK" }
-                    when {
-                        hasFront && !hasBack -> "BACK"
-                        hasBack && !hasFront -> "FRONT"
-                        else                 -> null
-                    }
-                }
-                .filter { (_, missingSide) -> missingSide != null }
+                    when { hasFront && !hasBack -> "BACK"; hasBack && !hasFront -> "FRONT"; else -> null }
+                }.filter { (_, missingSide) -> missingSide != null }
 
             val matchingGroups = groupsByMissingSide
-                .filter { (_, missingSide) -> missingSide == thisSide }
-                .keys.toList()
+                .filter { (_, missingSide) -> missingSide == thisSide }.keys.toList()
+            Log.d("AadhaarDebug", "S4.5 matchingGroups=${matchingGroups.size}")
 
             when {
                 matchingGroups.size == 1 -> {
-                    // Unambiguous — exactly one incomplete group needs this side
                     lastAadhaarGroupId = matchingGroups.first()
+                    Log.d("AadhaarDebug", "S4.5 → RETURN DB fill")
                     return matchingGroups.first()
                 }
                 matchingGroups.size > 1 -> {
-                    // Multiple incomplete groups — pick the most recently created one
-                    // This handles "next day" scanning where old incomplete pairs exist
                     val mostRecent = existingDocs
                         .filter { it.aadhaarGroupId in matchingGroups }
-                        .maxByOrNull { it.createdAt }
-                        ?.aadhaarGroupId
-                    if (mostRecent != null) {
-                        lastAadhaarGroupId = mostRecent
-                        Log.d("AadhaarDebug",
-                            "resolveGroupId → multiple incomplete groups, picking most recent: $mostRecent")
-                        return mostRecent
-                    }
+                        .maxByOrNull { it.createdAt }?.aadhaarGroupId
+                    Log.d("AadhaarDebug", "S4.5 multiple incomplete, mostRecent=${mostRecent != null}")
+                    if (mostRecent != null) { lastAadhaarGroupId = mostRecent; return mostRecent }
                 }
             }
+            Log.d("AadhaarDebug", "S4.5 FAILED — fell through")
         }
 
-        // ── 5. Partial OCR key ────────────────────────────────────────────────
+        // ── Strategy 5 / 6: partial key or timestamp fallback ────────────────
         val partialKey = if (fields != null)
-            ocrHelper.buildAadhaarGroupId(fields.name, fields.idNumber)
-        else null
-
-        // ── 6. Last resort ────────────────────────────────────────────────────
+            ocrHelper.buildAadhaarGroupId(fields.name, fields.idNumber) else null
         val result = partialKey ?: "aadhaar_grp_${System.currentTimeMillis()}"
+        Log.d("AadhaarDebug", "S5/6 LAST RESORT → ${result.take(20)}")
         lastAadhaarGroupId = result
         return result
     }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * A "confident" group ID is one derived from both name + number (Strategy 1).
+     * Fallback IDs from Strategy 5/6 start with "aadhaar_grp_" or have the
+     * "ag_n_" prefix (number-only, no name anchor).
+     */
+    private fun isConfidentGroupId(groupId: String): Boolean =
+        !groupId.startsWith("ag_n_") && !groupId.startsWith("aadhaar_grp_")
 
     private fun normalizeForMismatch(label: String): String = when (label) {
         "Aadhaar Front", "Aadhaar Back" -> "Aadhaar"
@@ -646,6 +658,11 @@ class ScannerViewModel @Inject constructor(
         else -> bitmap
     }
 
+    /**
+     * File names show only the last 4 digits of the ID number — consistent with
+     * the UIDAI masked-Aadhaar format (XXXX XXXX 1234). The full number is
+     * never embedded in file names or logs.
+     */
     private fun buildSmartName(
         type       : DocClassType,
         personName : String?,
@@ -656,7 +673,10 @@ class ScannerViewModel @Inject constructor(
         personName?.let { parts.add(it) }
         val label = type.displayName.replace(" ", "_")
         if (type != DocClassType.OTHER) parts.add(label)
-        idNumber?.let { parts.add(it.replace("\\s".toRegex(), "").takeLast(6)) }
+        idNumber
+            ?.filter { it.isDigit() }
+            ?.takeLast(4)                // ← last 4 only, never full number
+            ?.let { if (it.length == 4) parts.add(it) }
         return if (parts.isEmpty()) null else parts.joinToString("_")
     }
 
@@ -679,9 +699,8 @@ class ScannerViewModel @Inject constructor(
                 targetDocType    = _state.value.targetDocType
             )
         } else {
-            ScannerState(sessionId = _state.value.sessionId)  // clears targetDocType
+            ScannerState(sessionId = _state.value.sessionId)
         }
-        // Always clear Aadhaar group state on reset
         lastAadhaarGroupId = null
         anchoredGroupId    = null
     }
@@ -694,6 +713,8 @@ class ScannerViewModel @Inject constructor(
         )
     }
 
+    // ── Private data classes ──────────────────────────────────────────────────
+
     private data class SavedDocInfo(
         val documentId    : String,
         val documentName  : String,
@@ -701,11 +722,17 @@ class ScannerViewModel @Inject constructor(
         val folderLabel   : String?
     )
 
+    /**
+     * Holds per-page Aadhaar metadata for the in-flight batch.
+     * Raw digits are NEVER stored here — only their SHA-256 hashes.
+     */
     private data class SavedAadhaarDocInfo(
         val documentId : String,
         val groupId    : String,
         val side       : String,
-        val ocrDigits  : String?
+        val numHash    : String?,   // SHA-256(salt + full 12 digits), null if OCR incomplete
+        val last4Hash  : String?,   // SHA-256(salt + last 4 digits), null if OCR gave < 4
+        val digitLen   : Int        // actual digit count OCR extracted (0, 4–12)
     )
 }
 

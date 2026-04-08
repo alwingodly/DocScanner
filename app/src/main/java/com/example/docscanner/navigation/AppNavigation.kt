@@ -10,6 +10,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.docscanner.domain.model.Document
+import com.example.docscanner.domain.model.AadhaarGroup
 import com.example.docscanner.presentation.alldocuments.AllDocumentsScreen
 import com.example.docscanner.presentation.alldocuments.AllDocumentsViewModel
 import com.example.docscanner.presentation.alldocuments.DocumentTab
@@ -59,6 +60,8 @@ fun DocScannerNavHost(
     val mergeState by mergeViewModel.state.collectAsState()
 
     var viewingDocument by remember { mutableStateOf<Document?>(null) }
+    var viewerDocuments by remember { mutableStateOf<List<Document>>(emptyList()) }
+    var viewerInitialIndex by remember { mutableIntStateOf(0) }
     var isSelectMode by remember { mutableStateOf(false) }
     var selectedCount by remember { mutableIntStateOf(0) }
     var docCount by remember { mutableIntStateOf(0) }
@@ -88,10 +91,12 @@ fun DocScannerNavHost(
         }
     }
 
-    fun navigateToViewer(doc: Document) {
+    fun navigateToViewer(doc: Document, docs: List<Document> = listOf(doc)) {
         val type = if (doc.pdfPath != null) DocumentType.PDF else DocumentType.IMAGE
         val uri = doc.pdfPath ?: doc.thumbnailPath ?: return
         viewingDocument = doc
+        viewerDocuments = docs
+        viewerInitialIndex = docs.indexOfFirst { it.id == doc.id }.takeIf { it >= 0 } ?: 0
         navController.navigate(Screen.Viewer.createRoute(doc.name, type, uri))
     }
 
@@ -194,7 +199,7 @@ fun DocScannerNavHost(
                     viewModel = allDocsViewModel,
                     onGroupTap = { groupId ->
                         navController.navigate(Screen.GroupDetail.createRoute(groupId))
-                    },
+                    }
                 )
             }
         }
@@ -237,7 +242,7 @@ fun DocScannerNavHost(
             GroupDetailScreen(
                 groupId    = groupId,
                 onBack     = { navController.popBackStack() },
-                onDocClick = { navigateToViewer(it) },
+                onDocClick = { doc, docs -> navigateToViewer(doc, docs) },
                 viewModel  = allDocsViewModel
             )
         }
@@ -261,23 +266,46 @@ fun DocScannerNavHost(
                 documentUri = uri,
                 documentType = type,
                 document = viewingDocument,
+                documents = viewerDocuments,
+                initialIndex = viewerInitialIndex,
+                allFolders = allDocsViewModel.allFolders.collectAsState().value,
                 onBack = { navController.popBackStack() },
-                onRename = { newName ->
-                    viewingDocument?.let { allDocsViewModel.renameDocument(it, newName) }
+                onRename = { doc, newName ->
+                    allDocsViewModel.renameDocument(doc, newName)
                     navController.popBackStack()
                 },
-                onChangeType = { label ->
-                    viewingDocument?.let { allDocsViewModel.changeDocumentType(it, label) }
+                onChangeType = { doc, label ->
+                    allDocsViewModel.changeDocumentType(doc, label)
                     navController.popBackStack()
                 },
-                onDelete = {
-                    viewingDocument?.let { allDocsViewModel.deleteDocument(it) }
+                onDelete = { doc ->
+                    allDocsViewModel.deleteDocument(doc)
                     navController.popBackStack()
                 },
-                onUnmerge = viewingDocument?.let { doc ->
+                onUnmerge = { doc ->
                     if (doc.isMergedPdf) {
-                        { mergeViewModel.unmerge(doc); navController.popBackStack() }
-                    } else null
+                        mergeViewModel.unmerge(doc)
+                        navController.popBackStack()
+                    }
+                },
+                onRenameAadhaarPair = { doc, newName ->
+                    val group = allDocsViewModel.aadhaarGroups.value
+                        .firstOrNull { it.groupId == doc.aadhaarGroupId }
+                    val sanitized = newName.trim().replace(" ", "_")
+                    group?.frontDoc?.let {
+                        allDocsViewModel.renameDocument(it, "${sanitized}_Aadhaar_Front")
+                    }
+                    group?.backDoc?.let {
+                        allDocsViewModel.renameDocument(it, "${sanitized}_Aadhaar_Back")
+                    }
+                },
+                onUngroupAadhaarPair = { doc ->
+                    val group = allDocsViewModel.aadhaarGroups.value
+                        .firstOrNull { it.groupId == doc.aadhaarGroupId }
+                    group?.let {
+                        allDocsViewModel.ungroupAadhaar(it)
+                        navController.popBackStack()
+                    }
                 }
             )
         }

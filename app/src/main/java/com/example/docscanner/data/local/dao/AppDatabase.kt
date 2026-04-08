@@ -18,7 +18,7 @@ import com.example.docscanner.data.local.entity.FolderEntity
         ApplicationDocumentEntity::class,
         DocGroupEntity::class           // ← new
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -98,5 +98,6 @@ abstract class AppDatabase : RoomDatabase() {
                 """)
             }
         }
+
     }
 }

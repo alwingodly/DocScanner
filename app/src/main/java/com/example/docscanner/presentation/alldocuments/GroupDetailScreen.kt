@@ -27,16 +27,21 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -62,18 +67,38 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.example.docscanner.domain.model.AadhaarGroup
 import com.example.docscanner.domain.model.Document
+
+private fun Document.groupBadgeLabel(): String = when {
+    aadhaarSide == "FRONT" || docClassLabel == "Aadhaar Front" -> "Front"
+    aadhaarSide == "BACK" || docClassLabel == "Aadhaar Back" -> "Back"
+    else -> docClassLabel ?: "Other"
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GroupDetailScreen(
     groupId   : String,
     onBack    : () -> Unit,
-    onDocClick: (Document) -> Unit,
+    onDocClick: (Document, List<Document>) -> Unit,
     viewModel : AllDocumentsViewModel = hiltViewModel()
 ) {
-    val rawDocs by viewModel.getGroupDocs(groupId)
-        .collectAsState(initial = emptyList())
+    val allDocs by viewModel.documents.collectAsState()
+    val aadhaarGroups by viewModel.aadhaarGroups.collectAsState()
+    val aadhaarGroup = remember(aadhaarGroups, groupId) {
+        aadhaarGroups.firstOrNull { it.groupId == groupId }
+    }
+    val isAadhaarGroup = aadhaarGroup != null
+
+    val rawDocs = remember(allDocs, groupId, aadhaarGroup) {
+        val groupDocs = allDocs.filter { it.docGroupId == groupId || it.aadhaarGroupId == groupId }
+        if (aadhaarGroup != null) {
+            listOfNotNull(aadhaarGroup.frontDoc, aadhaarGroup.backDoc)
+        } else {
+            groupDocs.sortedByDescending { it.createdAt }
+        }
+    }
 
     val sectionOrder by viewModel.sectionDocOrder.collectAsState()
 
@@ -89,6 +114,12 @@ fun GroupDetailScreen(
     }
 
     var contextDoc by remember { mutableStateOf<Document?>(null) }
+    var actionDoc by remember { mutableStateOf<Document?>(null) }
+    var showRenamePairDialog by remember { mutableStateOf(false) }
+    var pairRenameText by remember { mutableStateOf("") }
+    var showRenameDocDialog by remember { mutableStateOf(false) }
+    var renameDocText by remember { mutableStateOf("") }
+    var showDeleteDocDialog by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState()
 
     // ── Drag state ────────────────────────────────────────────────────────
@@ -129,13 +160,21 @@ fun GroupDetailScreen(
                 }
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "Group · ${docs.size} doc${if (docs.size != 1) "s" else ""}",
+                        if (isAadhaarGroup) {
+                            aadhaarGroup?.displayName ?: "Aadhaar Pair"
+                        } else {
+                            "Group"
+                        },
                         color      = Ink,
                         fontSize   = 17.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        "Long-press a tile to reorder",
+                        if (isAadhaarGroup) {
+                            "Aadhaar pair · ${docs.size} file${if (docs.size != 1) "s" else ""}"
+                        } else {
+                            "Long-press a tile to reorder"
+                        },
                         color    = InkDim,
                         fontSize = 11.sp
                     )
@@ -255,7 +294,7 @@ fun GroupDetailScreen(
                                     GroupGalleryTile(
                                         doc       = doc,
                                         index     = flatIdx + 1,   // 1-based position number
-                                        onTap     = { onDocClick(doc) },
+                                        onTap     = { onDocClick(doc, docs) },
                                         onMoreTap = { contextDoc = doc }
                                     )
                                 }
@@ -361,7 +400,7 @@ fun GroupDetailScreen(
                     label = "View",
                     color = Color(0xFF2563EB)
                 ) {
-                    onDocClick(doc)
+                    onDocClick(doc, docs)
                     contextDoc = null
                 }
 
@@ -371,34 +410,264 @@ fun GroupDetailScreen(
                     modifier  = Modifier.padding(horizontal = 20.dp)
                 )
 
-                // Remove from group
-                ContextAction(
-                    icon  = Icons.Default.LinkOff,
-                    label = "Remove from group",
-                    color = InkMid
-                ) {
-                    viewModel.removeFromGroup(doc.id)
-                    contextDoc = null
-                }
+                if (isAadhaarGroup && aadhaarGroup != null) {
+                    ContextAction(
+                        icon  = Icons.Default.DriveFileRenameOutline,
+                        label = "Rename file",
+                        color = Color(0xFF2563EB)
+                    ) {
+                        actionDoc = doc
+                        renameDocText = doc.name
+                        showRenameDocDialog = true
+                        contextDoc = null
+                    }
 
-                HorizontalDivider(
-                    color     = StrokeLight,
-                    thickness = 0.5.dp,
-                    modifier  = Modifier.padding(horizontal = 20.dp)
-                )
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
 
-                // Disband entire group
-                ContextAction(
-                    icon  = Icons.Default.FolderOff,
-                    label = "Disband entire group",
-                    color = DangerRed
-                ) {
-                    viewModel.disbandGroup(groupId)
-                    contextDoc = null
-                    onBack()
+                    ContextAction(
+                        icon  = Icons.Default.SwapHoriz,
+                        label = "Swap Front / Back",
+                        color = Color(0xFF059669)
+                    ) {
+                        viewModel.swapAadhaarSides(aadhaarGroup)
+                        contextDoc = null
+                    }
+
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
+
+                    ContextAction(
+                        icon  = Icons.Default.DeleteOutline,
+                        label = "Delete file",
+                        color = DangerRed
+                    ) {
+                        actionDoc = doc
+                        showDeleteDocDialog = true
+                        contextDoc = null
+                    }
+
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
+
+                    ContextAction(
+                        icon  = Icons.Default.LinkOff,
+                        label = "Ungroup pair",
+                        color = InkMid
+                    ) {
+                        viewModel.ungroupAadhaar(aadhaarGroup)
+                        contextDoc = null
+                        onBack()
+                    }
+                } else {
+                    ContextAction(
+                        icon  = Icons.Default.LinkOff,
+                        label = "Remove from group",
+                        color = InkMid
+                    ) {
+                        viewModel.removeFromGroup(doc.id)
+                        contextDoc = null
+                    }
+
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
+
+                    ContextAction(
+                        icon  = Icons.Default.FolderOff,
+                        label = "Disband entire group",
+                        color = DangerRed
+                    ) {
+                        viewModel.disbandGroup(groupId)
+                        contextDoc = null
+                        onBack()
+                    }
                 }
             }
         }
+    }
+
+    if (showRenameDocDialog) {
+        val doc = actionDoc
+        AlertDialog(
+            onDismissRequest = {
+                showRenameDocDialog = false
+                actionDoc = null
+            },
+            containerColor = BgCard,
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Text("Rename file", color = Ink, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            },
+            text = {
+                OutlinedTextField(
+                    value = renameDocText,
+                    onValueChange = { renameDocText = it },
+                    singleLine = true,
+                    label = { Text("File name") },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (renameDocText.isBlank()) BgSurface else Color(0xFF2563EB))
+                        .clickable(enabled = renameDocText.isNotBlank()) {
+                            doc?.let { viewModel.renameDocument(it, renameDocText.trim()) }
+                            showRenameDocDialog = false
+                            actionDoc = null
+                        }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text(
+                        "Rename",
+                        color = if (renameDocText.isBlank()) InkDim else Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
+                    )
+                }
+            },
+            dismissButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BgSurface)
+                        .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
+                        .clickable {
+                            showRenameDocDialog = false
+                            actionDoc = null
+                        }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        )
+    }
+
+    if (showDeleteDocDialog) {
+        val doc = actionDoc
+        AlertDialog(
+            onDismissRequest = {
+                showDeleteDocDialog = false
+                actionDoc = null
+            },
+            containerColor = BgCard,
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Text("Delete file", color = Ink, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            },
+            text = {
+                Text(
+                    "Delete \"${doc?.name ?: ""}\"? This cannot be undone.",
+                    color = InkDim,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(DangerRed.copy(0.10f))
+                        .border(1.dp, DangerRed.copy(0.30f), RoundedCornerShape(12.dp))
+                        .clickable {
+                            doc?.let { viewModel.deleteDocument(it) }
+                            showDeleteDocDialog = false
+                            actionDoc = null
+                            if (docs.size <= 1) onBack()
+                        }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text("Delete", color = DangerRed, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+            },
+            dismissButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BgSurface)
+                        .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
+                        .clickable {
+                            showDeleteDocDialog = false
+                            actionDoc = null
+                        }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        )
+    }
+
+    if (showRenamePairDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenamePairDialog = false },
+            containerColor = BgCard,
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Text("Rename pair", color = Ink, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            },
+            text = {
+                OutlinedTextField(
+                    value = pairRenameText,
+                    onValueChange = { pairRenameText = it },
+                    singleLine = true,
+                    label = { Text("Pair name") },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (pairRenameText.isBlank()) BgSurface else Color(0xFF2563EB))
+                        .clickable(enabled = pairRenameText.isNotBlank()) {
+                            val sanitized = pairRenameText.trim().replace(" ", "_")
+                            aadhaarGroup?.frontDoc?.let {
+                                viewModel.renameDocument(it, "${sanitized}_Aadhaar_Front")
+                            }
+                            aadhaarGroup?.backDoc?.let {
+                                viewModel.renameDocument(it, "${sanitized}_Aadhaar_Back")
+                            }
+                            showRenamePairDialog = false
+                        }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text(
+                        "Rename",
+                        color = if (pairRenameText.isBlank()) InkDim else Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
+                    )
+                }
+            },
+            dismissButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BgSurface)
+                        .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
+                        .clickable { showRenamePairDialog = false }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        )
     }
 }
 
@@ -463,8 +732,9 @@ private fun GroupGalleryTile(
         )
 
         // ── Type badge (top-left) ─────────────────────────────────────────
-        val label = doc.docClassLabel ?: "Other"
-        val c     = TypeColors[label] ?: InkMid
+        val label = doc.groupBadgeLabel()
+        val colorKey = if (label == "Front" || label == "Back") "Aadhaar" else label
+        val c     = TypeColors[colorKey] ?: InkMid
         Box(
             Modifier
                 .align(Alignment.TopStart)

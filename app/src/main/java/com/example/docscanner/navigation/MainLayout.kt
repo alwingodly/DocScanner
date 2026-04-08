@@ -60,8 +60,9 @@ fun MainLayout(
 
         // ── Status bar tint ───────────────────────────────────────────────────
         Spacer(
-            Modifier.fillMaxWidth()
-                .statusBarsPadding()
+            Modifier
+                .fillMaxWidth()
+                .windowInsetsTopHeight(WindowInsets.statusBars)
                 .background(BgCard)
         )
 

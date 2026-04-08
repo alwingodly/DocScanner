@@ -120,4 +120,6 @@ interface DocumentDao {
     AND isMergedSource = 0
 """)
     suspend fun getGlobalAadhaarDocs(): List<DocumentEntity>
+
+
 }

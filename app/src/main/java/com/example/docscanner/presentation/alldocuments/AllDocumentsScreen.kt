@@ -84,6 +84,14 @@ internal val TypeColors = mapOf(
 )
 
 private val ALL_TYPES = DocClassType.entries.map { it.displayName }
+
+private fun Document.aadhaarSideLabel(): String = when {
+    aadhaarSide == "FRONT" || docClassLabel == "Aadhaar Front" -> "Front"
+    aadhaarSide == "BACK" || docClassLabel == "Aadhaar Back" -> "Back"
+    docClassLabel == "Aadhaar" -> "Aadhaar"
+    else -> "Type"
+}
+
 private fun Document.isMergeable() = pdfPath == null && !isMergedSource
 
 enum class DocumentTab { ALL, UNCLASSIFIED }
@@ -124,6 +132,7 @@ fun AllDocumentsScreen(
     var showGroupNameDialog by remember { mutableStateOf(false) }
     var pendingGroupDocIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var groupNameText by remember { mutableStateOf("") }
+    var contextAadhaarGroupId by remember { mutableStateOf<String?>(null) }
 
 
     val contextAadhaarGroup = remember(contextDoc, aadhaarGroups) {
@@ -150,6 +159,7 @@ fun AllDocumentsScreen(
 
     var selectedOrder by remember { mutableStateOf(listOf<String>()) }
     val selectedIds = selectedOrder.toSet()
+    var groupingScopeIds by remember { mutableStateOf<Set<String>?>(null) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var typeChangeDoc by remember { mutableStateOf<Document?>(null) }
     val sheetState = rememberModalBottomSheetState()
@@ -158,12 +168,19 @@ fun AllDocumentsScreen(
     var showGroupRenameDialog by remember { mutableStateOf(false) }
     var groupRenameText by remember { mutableStateOf("") }
     val docGroupNames by viewModel.docGroupNames.collectAsState()
+    var pendingAadhaarPairId by remember { mutableStateOf<String?>(null) }
 
     val hasFolders = filteredGrouped.isNotEmpty()
 
-    LaunchedEffect(isSelectMode) { if (!isSelectMode) selectedOrder = emptyList() }
+    LaunchedEffect(isSelectMode) {
+        if (!isSelectMode) {
+            selectedOrder = emptyList()
+            groupingScopeIds = null
+        }
+    }
     LaunchedEffect(documents) {
         selectedOrder = selectedOrder.filter { id -> documents.any { it.id == id } }
+        groupingScopeIds = groupingScopeIds?.intersect(documents.map { it.id }.toSet())?.takeIf { it.isNotEmpty() }
     }
     LaunchedEffect(filteredGrouped) {
         val shouldCollapse = filteredGrouped
@@ -223,19 +240,25 @@ fun AllDocumentsScreen(
                 isSelectMode = isSelectMode,
                 selectedIds = selectedIds,
                 onSelect = { id ->
+                    if (groupingScopeIds != null && id !in groupingScopeIds!!) return@GallerySectionedGrid
                     selectedOrder = if (id in selectedIds) selectedOrder - id else selectedOrder + id
                 },
                 onSelectSection = { sectionDocs ->
-                    val sectionIds = sectionDocs.map { it.id }.toSet()
+                    val sectionIds = sectionDocs.map { it.id }
+                    val sectionIdSet = sectionIds.toSet()
+                    if (groupingScopeIds != null && !sectionIds.all { it in groupingScopeIds!! }) {
+                        return@GallerySectionedGrid
+                    }
                     val allSelected = sectionIds.all { it in selectedIds }
                     selectedOrder = if (allSelected)
-                        selectedOrder.filter { it !in sectionIds }
+                        selectedOrder.filter { it !in sectionIdSet }
                     else
                         (selectedOrder + sectionIds).distinct()
                 },
                 onLongPressSection = { sectionDocs ->
                     val ids = sectionDocs.map { it.id }
                     if (!isSelectMode) onEnterSelectMode()   // ← was onSelectToggle()
+                    groupingScopeIds = ids.toSet()
                     selectedOrder = ids                      // ← only this section, fresh
                 },
                 aadhaarGroups        = aadhaarGroups,
@@ -247,14 +270,17 @@ fun AllDocumentsScreen(
                 docGroups = docGroups,
                 selectedOrder = selectedOrder,
                 onGroupMoreTap = { groupId -> contextGroupId = groupId },
-                docGroupNames = docGroupNames
+                docGroupNames = docGroupNames,
+                onAadhaarGroupMoreTap = { groupId -> contextAadhaarGroupId = groupId },
+                pendingAadhaarPairId = pendingAadhaarPairId,
+                onPendingAadhaarPairChange = { pendingAadhaarPairId = it },
+                groupingScopeIds = groupingScopeIds,
             )
         }
 
         // ── Select action bar ─────────────────────────────────────────────────
-        // ── Select action bar ─────────────────────────────────────────────────
         AnimatedVisibility(
-            visible = isSelectMode && selectedOrder.isNotEmpty(),
+            visible = isSelectMode && (selectedOrder.isNotEmpty() || groupingScopeIds != null),
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit  = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -262,6 +288,7 @@ fun AllDocumentsScreen(
             val selectedDocs = remember(selectedOrder, documents) {
                 documents.filter { it.id in selectedIds }
             }
+            val isGroupingFlow = groupingScopeIds != null
             // All selected docs are the same non-Aadhaar type → can group
             val canGroup = remember(selectedDocs) {
                 selectedDocs.size >= 2 &&
@@ -276,17 +303,22 @@ fun AllDocumentsScreen(
                     .navigationBarsPadding(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // ── Group button — only when groupable ────────────────────────
-                if (canGroup) {
+                // ── Group button — shown throughout group-selection flow ──────
+                if (isGroupingFlow || canGroup) {
                     Box(
                         Modifier
                             .fillMaxWidth()
                             .height(52.dp)
                             .shadow(16.dp, RoundedCornerShape(14.dp),
-                                ambientColor = Color(0xFF059669).copy(0.25f))
+                                ambientColor = Color(0xFF059669).copy(if (canGroup) 0.25f else 0.10f))
                             .clip(RoundedCornerShape(14.dp))
-                            .background(Color(0xFF059669))
-                            .clickable {
+                            .background(if (canGroup) Color(0xFF059669) else BgSurface)
+                            .border(
+                                1.dp,
+                                if (canGroup) Color.Transparent else StrokeLight,
+                                RoundedCornerShape(14.dp)
+                            )
+                            .clickable(enabled = canGroup) {
                                 pendingGroupDocIds = selectedOrder.toList()
                                 groupNameText = ""
                                 showGroupNameDialog = true
@@ -298,18 +330,22 @@ fun AllDocumentsScreen(
                             verticalAlignment     = Alignment.CenterVertically
                         ) {
                             Icon(Icons.Default.CreateNewFolder, null,
-                                tint = Color.White, modifier = Modifier.size(18.dp))
+                                tint = if (canGroup) Color.White else InkDim, modifier = Modifier.size(18.dp))
                             Text(
-                                "Group ${selectedIds.size} documents",
-                                color = Color.White, fontSize = 15.sp,
+                                if (canGroup) {
+                                    "Group ${selectedIds.size} documents"
+                                } else {
+                                    "Select at least 2 documents to group"
+                                },
+                                color = if (canGroup) Color.White else InkDim, fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
                 }
 
-                // ── Delete button — hidden when grouping is available ─────────────────
-                if (!canGroup) {
+                // ── Delete button — only for normal multi-select flow ────────
+                if (!isGroupingFlow && !canGroup) {
                     Box(
                         Modifier
                             .fillMaxWidth()
@@ -541,7 +577,7 @@ fun AllDocumentsScreen(
                             documents.filter { it.id in selectedIds }
                                 .forEach { viewModel.deleteDocument(it) }
                             selectedOrder = emptyList()
-                            onSelectToggle()
+                            if (isSelectMode) onSelectToggle()
                             showDeleteDialog = false
                         }
                         .padding(horizontal = 20.dp, vertical = 11.dp)
@@ -574,6 +610,7 @@ fun AllDocumentsScreen(
         val currentLabel = doc.docClassLabel ?: "Other"
         val isAadhaar    = currentLabel.startsWith("Aadhaar")
         val isInGroup    = doc.docGroupId != null
+        val isGroupedAadhaar = doc.aadhaarGroupId != null
 
         ModalBottomSheet(
             onDismissRequest = { contextDoc = null },
@@ -684,13 +721,47 @@ fun AllDocumentsScreen(
                     contextDoc    = null
                 }
 
+                if (isAadhaar && !isGroupedAadhaar) {
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp))
+
+                    val isPendingSource = pendingAadhaarPairId == doc.id
+                    val hasPendingOther = pendingAadhaarPairId != null && pendingAadhaarPairId != doc.id
+
+                    ContextAction(
+                        icon = if (isPendingSource) Icons.Default.Close else Icons.Default.Link,
+                        label = when {
+                            isPendingSource -> "Cancel pairing"
+                            hasPendingOther -> "Pair with selected Aadhaar"
+                            else -> "Pair with another Aadhaar"
+                        },
+                        color = if (isPendingSource) InkMid else Color(0xFF059669)
+                    ) {
+                        when {
+                            isPendingSource -> {
+                                pendingAadhaarPairId = null
+                                Toast.makeText(context, "Aadhaar pairing cancelled", Toast.LENGTH_SHORT).show()
+                            }
+                            hasPendingOther -> {
+                                viewModel.manuallyGroupAadhaar(pendingAadhaarPairId!!, doc.id)
+                                pendingAadhaarPairId = null
+                                Toast.makeText(context, "Aadhaar cards paired", Toast.LENGTH_SHORT).show()
+                            }
+                            else -> {
+                                pendingAadhaarPairId = doc.id
+                                Toast.makeText(context, "Now tap another Aadhaar to pair", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        contextDoc = null
+                    }
+                }
+
                 // ── Group actions (non-Aadhaar only) ──────────────────────────
                 if (!isAadhaar) {
                     HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
                         modifier = Modifier.padding(horizontal = 20.dp))
 
                     if (isInGroup) {
-                        // Show which group and let user remove from it
                         ContextAction(
                             icon  = Icons.Default.LinkOff,
                             label = "Remove from group",
@@ -714,43 +785,29 @@ fun AllDocumentsScreen(
                             contextDoc = null
                         }
                     } else {
-                        // Not in group — guide user to use select mode
-                        ContextAction(
-                            icon  = Icons.Default.Checklist,
-                            label = "Select docs to group",
-                            color = Color(0xFF059669)
-                        ) {
-                            contextDoc = null
-                            // Enter select mode with this doc pre-selected
-                            onEnterSelectMode()
+                        // Only show grouping option if the section has more than 1 doc
+                        val sectionDocCount = remember(doc, filteredGrouped) {
+                            val sectionKey = filteredGrouped.entries
+                                .firstOrNull { (_, docs) -> docs.any { it.id == doc.id } }?.key
+                            filteredGrouped[sectionKey]?.size ?: 0
                         }
-                    }
-                }
 
-                // ── Aadhaar-specific actions ───────────────────────────────────
-                if (contextAadhaarGroup != null) {
-                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
-                        modifier = Modifier.padding(horizontal = 20.dp))
-
-                    ContextAction(
-                        icon  = Icons.Default.LinkOff,
-                        label = "Ungroup Aadhaar pair",
-                        color = Color(0xFF2563EB)
-                    ) {
-                        viewModel.ungroupAadhaar(contextAadhaarGroup!!)
-                        contextDoc = null
-                    }
-
-                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
-                        modifier = Modifier.padding(horizontal = 20.dp))
-
-                    ContextAction(
-                        icon  = Icons.Default.SwapHoriz,
-                        label = "Swap Front / Back",
-                        color = Color(0xFF059669)
-                    ) {
-                        viewModel.swapAadhaarSides(contextAadhaarGroup!!)
-                        contextDoc = null
+                        if (sectionDocCount > 1) {
+                            ContextAction(
+                                icon  = Icons.Default.Checklist,
+                                label = "Select docs to group",
+                                color = Color(0xFF059669)
+                            ) {
+                                contextDoc = null
+                                groupingScopeIds = filteredGrouped.entries
+                                    .firstOrNull { (_, docs) -> docs.any { it.id == doc.id } }
+                                    ?.value
+                                    ?.map { it.id }
+                                    ?.toSet()
+                                onEnterSelectMode()
+                                selectedOrder = listOf(doc.id)
+                            }
+                        }
                     }
                 }
 
@@ -1548,6 +1605,171 @@ fun AllDocumentsScreen(
             }
         )
     }
+
+    // ── Aadhaar pair context sheet ────────────────────────────────────────────────
+    if (contextAadhaarGroupId != null && !showGroupRenameDialog) {
+        val groupId = contextAadhaarGroupId!!
+        val group = aadhaarGroups.firstOrNull { it.groupId == groupId }
+        val aadhaarBlue = Color(0xFF2563EB)
+
+        var showAadhaarRenameDialog by remember { mutableStateOf(false) }
+        var aadhaarRenameText by remember { mutableStateOf("") }
+
+        if (!showAadhaarRenameDialog) {
+            ModalBottomSheet(
+                onDismissRequest = { contextAadhaarGroupId = null },
+                containerColor = BgCard,
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                dragHandle = {
+                    Box(
+                        Modifier
+                            .padding(top = 12.dp, bottom = 4.dp)
+                            .width(40.dp).height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(StrokeMid)
+                    )
+                }
+            ) {
+                Column(Modifier.fillMaxWidth().padding(bottom = 40.dp)) {
+
+                    // Header
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier.size(42.dp).clip(RoundedCornerShape(10.dp))
+                                .background(aadhaarBlue.copy(0.1f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.CreditCard, null,
+                                tint = aadhaarBlue, modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                group?.displayName ?: "Aadhaar Pair",
+                                color = Ink, fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                if (group?.isComplete == true) "Front + Back" else "Incomplete pair",
+                                color = if (group?.isComplete == true) aadhaarBlue else Color(0xFFD97706),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp)
+
+                    // Rename pair
+                    ContextAction(
+                        icon  = Icons.Default.DriveFileRenameOutline,
+                        label = "Rename pair",
+                        color = Color(0xFF2563EB)
+                    ) {
+                        aadhaarRenameText = group?.frontDoc?.name
+                            ?.substringBefore("_Aadhaar")
+                            ?.replace("_", " ")
+                            ?: group?.backDoc?.name
+                                ?.substringBefore("_Aadhaar")
+                                ?.replace("_", " ")
+                                    ?: group?.displayName
+                                    ?: ""
+                        showAadhaarRenameDialog = true
+                    }
+
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp))
+
+                    // Swap front / back
+                    ContextAction(
+                        icon  = Icons.Default.SwapHoriz,
+                        label = "Swap Front / Back",
+                        color = Color(0xFF059669)
+                    ) {
+                        group?.let { viewModel.swapAadhaarSides(it) }
+                        Toast.makeText(context, "Sides swapped", Toast.LENGTH_SHORT).show()
+                        contextAadhaarGroupId = null
+                    }
+
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp))
+
+                    // Ungroup pair
+                    ContextAction(
+                        icon  = Icons.Default.LinkOff,
+                        label = "Ungroup pair",
+                        color = InkMid
+                    ) {
+                        group?.let { viewModel.ungroupAadhaar(it) }
+                        Toast.makeText(context, "Pair ungrouped", Toast.LENGTH_SHORT).show()
+                        contextAadhaarGroupId = null
+                    }
+                }
+            }
+        }
+
+        // Rename dialog for Aadhaar pair
+        if (showAadhaarRenameDialog) {
+            AlertDialog(
+                onDismissRequest = { showAadhaarRenameDialog = false },
+                containerColor = BgCard,
+                shape = RoundedCornerShape(20.dp),
+                title = {
+                    Text("Rename pair", color = Ink,
+                        fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                },
+                text = {
+                    OutlinedTextField(
+                        value = aadhaarRenameText,
+                        onValueChange = { aadhaarRenameText = it },
+                        singleLine = true,
+                        label = { Text("Pair name") },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (aadhaarRenameText.isBlank()) BgSurface else Coral)
+                            .clickable(enabled = aadhaarRenameText.isNotBlank()) {
+                                val sanitized = aadhaarRenameText.trim().replace(" ", "_")
+                                group?.frontDoc?.let {
+                                    viewModel.renameDocument(it, "${sanitized}_Aadhaar_Front")
+                                }
+                                group?.backDoc?.let {
+                                    viewModel.renameDocument(it, "${sanitized}_Aadhaar_Back")
+                                }
+                                showAadhaarRenameDialog = false
+                                contextAadhaarGroupId = null
+                            }
+                            .padding(horizontal = 20.dp, vertical = 11.dp)
+                    ) {
+                        Text("Rename",
+                            color = if (aadhaarRenameText.isBlank()) InkDim else Color.White,
+                            fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    }
+                },
+                dismissButton = {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(BgSurface)
+                            .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
+                            .clickable { showAadhaarRenameDialog = false }
+                            .padding(horizontal = 20.dp, vertical = 11.dp)
+                    ) {
+                        Text("Cancel", color = InkMid, fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium)
+                    }
+                }
+            )
+        }
+    }
 }
 
 
@@ -1576,67 +1798,91 @@ private fun GallerySectionedGrid(
     onSelect: (String) -> Unit = {},
     onSelectSection: (List<Document>) -> Unit = {},
     onLongPressSection: (List<Document>) -> Unit = {},
-    aadhaarGroups : List<com.example.docscanner.domain.model.AadhaarGroup> = emptyList(),
-    onManualGroup : (String, String) -> Unit = { _, _ -> },
-    onAddToGroup : (docId: String, groupId: String, side: String) -> Unit = { _, _, _ -> },
+    aadhaarGroups: List<com.example.docscanner.domain.model.AadhaarGroup> = emptyList(),
+    onManualGroup: (String, String) -> Unit = { _, _ -> },
+    onAddToGroup: (docId: String, groupId: String, side: String) -> Unit = { _, _, _ -> },
     onGroupTap: (String) -> Unit = {},
     docGroups: Map<String, List<Document>> = emptyMap(),
     selectedOrder: List<String> = emptyList(),
     onGroupMoreTap: (groupId: String) -> Unit = {},
     docGroupNames: Map<String, String> = emptyMap(),
+    onAadhaarGroupMoreTap: (groupId: String) -> Unit = {},
+    pendingAadhaarPairId: String? = null,
+    onPendingAadhaarPairChange: (String?) -> Unit = {},
+    groupingScopeIds: Set<String>? = null
 ) {
-    // label == folder.name (groupedByDocType keys by folder.name)
     val folderByName = remember(allFolders) { allFolders.associateBy { it.name } }
 
     LazyColumn(contentPadding = PaddingValues(bottom = 130.dp), modifier = Modifier.fillMaxSize()) {
         grouped.entries.forEachIndexed { index, (label, docs) ->
             val typeColor = TypeColors[label] ?: InkMid
             val folder = folderByName[label]
+            val sectionSelectionEnabled = groupingScopeIds == null || docs.all { it.id in groupingScopeIds }
 
             if (index > 0) item(key = "spacer_$label") { Spacer(Modifier.height(20.dp)) }
 
             item(key = "header_$label") {
                 SectionHeaderRow(
-                    label = label,
-                    count = docs.size,
-                    typeColor = typeColor,
-                    isCollapsed = label in collapsedSections,
-                    onToggle = { onToggleSection(label) },
-                    // new:
+                    label        = label,
+                    count        = docs.size,
+                    typeColor    = typeColor,
+                    isCollapsed  = label in collapsedSections,
+                    onToggle     = { onToggleSection(label) },
                     isSelectMode = isSelectMode,
-                    sectionDocs = docs,
-                    selectedIds = selectedIds,
+                    sectionDocs  = docs,
+                    selectedIds  = selectedIds,
                     onSelectSection = { onSelectSection(docs) },
-                    onLongPress = { onLongPressSection(docs) },
+                    onLongPress  = { onLongPressSection(docs) },
+                    isSelectionEnabled = sectionSelectionEnabled,
                 )
             }
 
             if (label !in collapsedSections) {
                 item(key = "grid_$label") {
-                    // In GallerySectionedGrid — already correct since label is the folder name "Aadhaar"
                     val isAadhaarSection = label.equals("Aadhaar", ignoreCase = true)
-
 
                     if (docs.isEmpty()) {
                         FolderEmptyState(
-                            typeColor = typeColor,
+                            typeColor   = typeColor,
                             onScanClick = { folder?.let { onScanToFolder(it) } ?: onScanClick() }
                         )
                     } else if (isAadhaarSection) {
-                        // Groups whose front or back doc belongs to this section
                         val sectionGroups = aadhaarGroups.filter { g ->
                             docs.any { d -> d.id == g.frontDoc?.id || d.id == g.backDoc?.id }
                         }
-                        AadhaarPairGrid(
-                            groups          = sectionGroups,
-                            unpairedDocs    = docs.filter { d ->
-                                sectionGroups.none { g -> d.id == g.frontDoc?.id || d.id == g.backDoc?.id }
-                            },
+                        val orderedAadhaarDocs = buildList {
+                            sectionGroups.forEach { group ->
+                                group.frontDoc?.let(::add)
+                                group.backDoc?.let(::add)
+                            }
+                            addAll(
+                                docs.filter { d ->
+                                    sectionGroups.none { g ->
+                                        d.id == g.frontDoc?.id || d.id == g.backDoc?.id
+                                    }
+                                }
+                            )
+                        }
+                        GalleryPhotoGrid(
+                            docs            = orderedAadhaarDocs,
+                            columnCount     = columnCount,
+                            onReorder       = { from, to -> onSectionReorder(label, from, to) },
                             onDocumentClick = onDocumentClick,
+                            onBadgeTap      = onBadgeTap,
                             onMoreTap       = onMoreTap,
-                            onManualGroup   = onManualGroup,
-                            onAddToGroup    = onAddToGroup,    // ← new
                             onScanTap       = { folder?.let { onScanToFolder(it) } ?: onScanClick() },
+                            isSelectMode    = isSelectMode,
+                            selectedIds     = selectedIds,
+                            onSelect        = onSelect,
+                            selectedOrder   = selectedOrder,
+                            aadhaarGroups   = sectionGroups,
+                            onAadhaarGroupMoreTap = onAadhaarGroupMoreTap,
+                            onManualGroup   = onManualGroup,
+                            onAddToGroup    = onAddToGroup,
+                            onGroupTap      = onGroupTap,
+                            pendingAadhaarPairId = pendingAadhaarPairId,
+                            onPendingAadhaarPairChange = onPendingAadhaarPairChange,
+                            selectionEnabled = sectionSelectionEnabled,
                         )
                     } else {
                         GalleryPhotoGrid(
@@ -1653,8 +1899,13 @@ private fun GallerySectionedGrid(
                             onGroupTap      = onGroupTap,
                             docGroups       = docGroups,
                             selectedOrder   = selectedOrder,
-                            onGroupMoreTap = onGroupMoreTap,
-                            docGroupNames = docGroupNames
+                            onGroupMoreTap  = onGroupMoreTap,
+                            docGroupNames   = docGroupNames,
+                            onManualGroup   = onManualGroup,
+                            onAddToGroup    = onAddToGroup,
+                            pendingAadhaarPairId = pendingAadhaarPairId,
+                            onPendingAadhaarPairChange = onPendingAadhaarPairChange,
+                            selectionEnabled = sectionSelectionEnabled,
                         )
                     }
                 }
@@ -1677,9 +1928,11 @@ private fun SectionHeaderRow(
     selectedIds: Set<String> = emptySet(),
     onSelectSection: () -> Unit = {},
     onLongPress: () -> Unit = {},        // ← new
+    isSelectionEnabled: Boolean = true,
 ) {
     val sectionSelected = sectionDocs.count { it.id in selectedIds }
     val allSectionSelected = sectionDocs.isNotEmpty() && sectionSelected == sectionDocs.size
+    val showSelectionUi = isSelectMode && sectionDocs.isNotEmpty() && isSelectionEnabled
     val chevron by animateFloatAsState(
         targetValue = if (isCollapsed) -90f else 0f,
         animationSpec = tween(200), label = "chev_$label"
@@ -1705,7 +1958,7 @@ private fun SectionHeaderRow(
             fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f)
         )
 
-        if (isSelectMode && sectionDocs.isNotEmpty()) {
+        if (showSelectionUi) {
             if (sectionSelected > 0)
                 Text(
                     "$sectionSelected/${sectionDocs.size}",
@@ -1722,7 +1975,7 @@ private fun SectionHeaderRow(
                         if (allSectionSelected) typeColor else StrokeMid,
                         RoundedCornerShape(5.dp)
                     )
-                    .clickable(onClick = onSelectSection),
+                    .clickable(enabled = isSelectionEnabled, onClick = onSelectSection),
                 contentAlignment = Alignment.Center
             ) {
                 if (allSectionSelected)
@@ -1798,12 +2051,29 @@ private fun GalleryPhotoGrid(
     docGroups: Map<String, List<Document>> = emptyMap(),
     onGroupMoreTap: (groupId: String) -> Unit = {},
     docGroupNames:Map<String, String> = emptyMap(),
-    ) {
+    aadhaarGroups: List<com.example.docscanner.domain.model.AadhaarGroup> = emptyList(),
+    onAadhaarGroupMoreTap: (groupId: String) -> Unit = {},
+    onManualGroup: (String, String) -> Unit = { _, _ -> },
+    onAddToGroup: (docId: String, groupId: String, side: String) -> Unit = { _, _, _ -> },
+    pendingAadhaarPairId: String? = null,
+    onPendingAadhaarPairChange: (String?) -> Unit = {},
+    selectionEnabled: Boolean = true,
+) {
+    val context = LocalContext.current
     val cardPos = remember { HashMap<Int, CardPos>() }
     var dragState by remember { mutableStateOf(DragState()) }
-    val renderedDocs = remember(docs, docGroups) {
+    val aadhaarGroupsById = remember(aadhaarGroups) { aadhaarGroups.associateBy { it.groupId } }
+    val renderedDocs = remember(docs, docGroups, aadhaarGroups, isSelectMode, selectionEnabled) {
         val seenGroupIds = mutableSetOf<String>()
+        val seenAadhaarGroupIds = mutableSetOf<String>()
         docs.filter { doc ->
+            val aadhaarGroupId = doc.aadhaarGroupId
+            if (aadhaarGroupId != null &&
+                aadhaarGroupsById.containsKey(aadhaarGroupId) &&
+                (!isSelectMode || !selectionEnabled)
+            ) {
+                return@filter seenAadhaarGroupIds.add(aadhaarGroupId)
+            }
             val gid = doc.docGroupId
             if (gid == null) true
             else seenGroupIds.add(gid)
@@ -1847,6 +2117,12 @@ private fun GalleryPhotoGrid(
                             doc.docGroupId?.let { docGroups[it] } ?: emptyList()
                         }
                         val isGrouped = doc.docGroupId != null
+                        val isUngroupedAadhaar = remember(doc.docClassLabel, doc.aadhaarGroupId) {
+                            doc.docClassLabel?.startsWith("Aadhaar") == true && doc.aadhaarGroupId == null
+                        }
+                        val aadhaarGroup = remember(doc.aadhaarGroupId, aadhaarGroupsById) {
+                            doc.aadhaarGroupId?.let { aadhaarGroupsById[it] }
+                        }
 
                         Box(
                             Modifier
@@ -1865,40 +2141,42 @@ private fun GalleryPhotoGrid(
                                     this.translationX = tx
                                     this.translationY = ty
                                 }
-                                .pointerInput(doc.id) {
-                                    detectDragGesturesAfterLongPress(
-                                        onDragStart = { dragState = DragState(idx = docIdx) },
-                                        onDrag = { change, amount ->
-                                            change.consume()
-                                            dragState = dragState.copy(
-                                                deltaX = dragState.deltaX + amount.x,
-                                                deltaY = dragState.deltaY + amount.y
-                                            )
-                                        },
-                                        onDragEnd = {
-                                            val cur = dragState
-                                            if (cur.idx >= 0) {
-                                                val p = cardPos[cur.idx]
-                                                if (p != null) {
-                                                    val dcx = p.cx + cur.deltaX
-                                                    val dcy = p.cy + cur.deltaY
-                                                    val target = cardPos.entries
-                                                        .filter { it.key != cur.idx }
-                                                        .minByOrNull { (_, q) ->
-                                                            val dx = q.cx - dcx
-                                                            val dy = q.cy - dcy
-                                                            dx * dx + dy * dy
-                                                        }?.key ?: cur.idx
-                                                    if (target != cur.idx) onReorder(cur.idx, target)
+                                .then(
+                                    if (isUngroupedAadhaar) Modifier else Modifier.pointerInput(doc.id) {
+                                        detectDragGesturesAfterLongPress(
+                                            onDragStart = { dragState = DragState(idx = docIdx) },
+                                            onDrag = { change, amount ->
+                                                change.consume()
+                                                dragState = dragState.copy(
+                                                    deltaX = dragState.deltaX + amount.x,
+                                                    deltaY = dragState.deltaY + amount.y
+                                                )
+                                            },
+                                            onDragEnd = {
+                                                val cur = dragState
+                                                if (cur.idx >= 0) {
+                                                    val p = cardPos[cur.idx]
+                                                    if (p != null) {
+                                                        val dcx = p.cx + cur.deltaX
+                                                        val dcy = p.cy + cur.deltaY
+                                                        val target = cardPos.entries
+                                                            .filter { it.key != cur.idx }
+                                                            .minByOrNull { (_, q) ->
+                                                                val dx = q.cx - dcx
+                                                                val dy = q.cy - dcy
+                                                                dx * dx + dy * dy
+                                                            }?.key ?: cur.idx
+                                                        if (target != cur.idx) onReorder(cur.idx, target)
+                                                    }
                                                 }
-                                            }
-                                            dragState = DragState()
-                                        },
-                                        onDragCancel = { dragState = DragState() }
-                                    )
-                                }
+                                                dragState = DragState()
+                                            },
+                                            onDragCancel = { dragState = DragState() }
+                                        )
+                                    }
+                                )
                         ) {
-                            if (isSelectMode) {
+                            if (isSelectMode && selectionEnabled) {
                                 val orderNumber = if (doc.id in selectedIds)
                                     selectedOrder.indexOf(doc.id) + 1  // ← now correct
                                 else null
@@ -1906,21 +2184,80 @@ private fun GalleryPhotoGrid(
                                     doc         = doc,
                                     isSelected  = doc.id in selectedIds,
                                     orderNumber = orderNumber,
-                                    onTap       = { onSelect(doc.id) }
+                                    isEnabled   = selectionEnabled,
+                                    onTap       = { if (selectionEnabled) onSelect(doc.id) }
+                                )
+                            } else if (aadhaarGroup != null) {
+                                AadhaarGroupedTile(
+                                    group = aadhaarGroup,
+                                    isPendingFill = selectionEnabled && pendingAadhaarPairId != null && !aadhaarGroup.isComplete,
+                                    onTap = {
+                                        if (isSelectMode && !selectionEnabled) return@AadhaarGroupedTile
+                                        val pendingId = pendingAadhaarPairId
+                                        if (pendingId != null && !aadhaarGroup.isComplete) {
+                                            val missingSide = if (aadhaarGroup.frontDoc == null) "FRONT" else "BACK"
+                                            onAddToGroup(pendingId, aadhaarGroup.groupId, missingSide)
+                                            Toast.makeText(context, "Added to Aadhaar pair", Toast.LENGTH_SHORT).show()
+                                            onPendingAadhaarPairChange(null)
+                                        } else {
+                                            onGroupTap(aadhaarGroup.groupId)
+                                        }
+                                    },
+                                    onMoreTap = {
+                                        if (isSelectMode && !selectionEnabled) return@AadhaarGroupedTile
+                                        onAadhaarGroupMoreTap(aadhaarGroup.groupId)
+                                    }
                                 )
                             } else if (isGrouped) {
                                 GroupedTile(
                                     docs      = groupDocs.sortedByDescending { it.createdAt },
                                     groupName = docGroupNames[doc.docGroupId] ?: "Group",
-                                    onTap     = { onGroupTap(doc.docGroupId!!) },
-                                    onMoreTap = { onGroupMoreTap(doc.docGroupId!!) }
+                                    onTap     = {
+                                        if (isSelectMode && !selectionEnabled) return@GroupedTile
+                                        onGroupTap(doc.docGroupId!!)
+                                    },
+                                    onMoreTap = {
+                                        if (isSelectMode && !selectionEnabled) return@GroupedTile
+                                        onGroupMoreTap(doc.docGroupId!!)
+                                    }
                                 )
                             } else {
                                 GalleryTile(
                                     doc        = doc,
-                                    onTap      = { onDocumentClick(doc) },
-                                    onBadgeTap = { onBadgeTap(doc) },
-                                    onMoreTap  = { onMoreTap(doc) },
+                                    isPendingAadhaarPair = selectionEnabled && doc.id == pendingAadhaarPairId,
+                                    onTap      = {
+                                        if (isSelectMode && !selectionEnabled) return@GalleryTile
+                                        if (isUngroupedAadhaar) {
+                                            when {
+                                                pendingAadhaarPairId == doc.id -> {
+                                                    onPendingAadhaarPairChange(null)
+                                                }
+                                                pendingAadhaarPairId != null -> {
+                                                    onManualGroup(pendingAadhaarPairId!!, doc.id)
+                                                    Toast.makeText(context, "Aadhaar cards paired", Toast.LENGTH_SHORT).show()
+                                                    onPendingAadhaarPairChange(null)
+                                                }
+                                                else -> onDocumentClick(doc)
+                                            }
+                                        } else {
+                                            onDocumentClick(doc)
+                                        }
+                                    },
+                                    onLongPress = {
+                                        if (isSelectMode && !selectionEnabled) return@GalleryTile
+                                        if (isUngroupedAadhaar) {
+                                            onPendingAadhaarPairChange(doc.id)
+                                            Toast.makeText(context, "Now tap another Aadhaar to pair", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onBadgeTap = {
+                                        if (isSelectMode && !selectionEnabled) return@GalleryTile
+                                        onBadgeTap(doc)
+                                    },
+                                    onMoreTap  = {
+                                        if (isSelectMode && !selectionEnabled) return@GalleryTile
+                                        onMoreTap(doc)
+                                    },
                                 )
                             }
                         }
@@ -1928,6 +2265,136 @@ private fun GalleryPhotoGrid(
                 }
                 repeat(columnCount - rowItems.size) { Spacer(Modifier.weight(1f)) }
             }
+        }
+    }
+}
+
+@Composable
+private fun AadhaarGroupedTile(
+    group: com.example.docscanner.domain.model.AadhaarGroup,
+    isPendingFill: Boolean = false,
+    onTap: () -> Unit,
+    onMoreTap: () -> Unit,
+) {
+    val leftDoc = group.frontDoc
+    val rightDoc = group.backDoc
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(4.dp))
+            .background(BgSurface)
+            .clickable(onClick = onTap)
+    ) {
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            AadhaarHalfTile(
+                doc = leftDoc,
+                label = "Front",
+                modifier = Modifier.weight(1f),
+                isPendingFill = isPendingFill && leftDoc == null
+            )
+            AadhaarHalfTile(
+                doc = rightDoc,
+                label = "Back",
+                modifier = Modifier.weight(1f),
+                isPendingFill = isPendingFill && rightDoc == null
+            )
+        }
+
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(42.dp)
+                .align(Alignment.BottomCenter)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))))
+        )
+
+        Text(
+            group.displayName,
+            color = Color.White,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 6.dp, bottom = 6.dp, end = 28.dp)
+        )
+
+        Box(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .padding(2.dp)
+                .size(24.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onMoreTap),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.MoreVert,
+                null,
+                tint = Color.White,
+                modifier = Modifier.size(14.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AadhaarHalfTile(
+    doc: Document?,
+    label: String,
+    modifier: Modifier = Modifier,
+    isPendingFill: Boolean = false,
+) {
+    Box(
+        modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(4.dp))
+            .background(BgSurface)
+            .then(
+                if (isPendingFill) Modifier.border(2.dp, Coral, RoundedCornerShape(4.dp))
+                else Modifier
+            )
+    ) {
+        if (doc?.thumbnailPath != null) {
+            AsyncImage(
+                model = doc.thumbnailPath,
+                contentDescription = label,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(if (isPendingFill) Coral.copy(0.12f) else Color.Black.copy(0.04f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    if (isPendingFill) "Tap to add $label" else label,
+                    color = if (isPendingFill) Coral else InkDim,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+
+        Box(
+            Modifier
+                .align(Alignment.TopStart)
+                .padding(4.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(Color.Black.copy(0.55f))
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+        ) {
+            Text(
+                label,
+                color = Color.White,
+                fontSize = 7.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -1976,8 +2443,10 @@ private fun GallerySelectGrid(
 @Composable
 private fun GalleryTile(
     doc: Document,
+    isPendingAadhaarPair: Boolean = false,
     modifier: Modifier = Modifier,
     onTap: () -> Unit,
+    onLongPress: () -> Unit = {},
     onBadgeTap: () -> Unit,
     onMoreTap: () -> Unit,
 ) {
@@ -1986,7 +2455,10 @@ private fun GalleryTile(
             .fillMaxWidth()
             .aspectRatio(1f)
             .background(BgSurface)
-            .clickable(onClick = onTap)
+            .combinedClickable(
+                onClick = onTap,
+                onLongClick = onLongPress
+            )
     ) {
         // ── Thumbnail ─────────────────────────────────────────────────────────
         if (doc.thumbnailPath != null)
@@ -2004,6 +2476,15 @@ private fun GalleryTile(
                     .align(Alignment.Center),
                 tint = InkDim
             )
+
+        if (isPendingAadhaarPair) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Coral.copy(alpha = 0.16f))
+                    .border(2.dp, Coral, RoundedCornerShape(4.dp))
+            )
+        }
 
         // ── Bottom scrim ──────────────────────────────────────────────────────
         Box(
@@ -2082,6 +2563,7 @@ private fun SelectTile(
     isSelected : Boolean,
     orderNumber: Int? = null,          // ← new: 1-based tap order
     modifier   : Modifier = Modifier,
+    isEnabled  : Boolean = true,
     onTap      : () -> Unit
 ) {
     val scaleAnim by animateFloatAsState(
@@ -2095,7 +2577,7 @@ private fun SelectTile(
             .aspectRatio(1f)
             .graphicsLayer { scaleX = scaleAnim; scaleY = scaleAnim }
             .background(BgSurface)
-            .clickable(onClick = onTap)
+            .clickable(enabled = isEnabled, onClick = onTap)
     ) {
         if (doc.thumbnailPath != null)
             AsyncImage(
@@ -2108,6 +2590,8 @@ private fun SelectTile(
 
         if (isSelected)
             Box(Modifier.fillMaxSize().background(Coral.copy(alpha = 0.22f)))
+        else if (!isEnabled)
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.24f)))
 
         Box(
             Modifier
@@ -2354,6 +2838,7 @@ private fun AadhaarPairGrid(
     onManualGroup   : (String, String) -> Unit,
     onAddToGroup    : (docId: String, groupId: String, side: String) -> Unit,  // ← new
     onScanTap       : () -> Unit,
+    onGroupMoreTap  : (groupId: String) -> Unit = {},  // ← ADD THIS
 ) {
     var pendingPairId by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
@@ -2382,7 +2867,8 @@ private fun AadhaarPairGrid(
                     onAddToGroup(pid, group.groupId, side)
                     Toast.makeText(context, "Added to pair", Toast.LENGTH_SHORT).show()
                     pendingPairId = null
-                }
+                },
+                onGroupMoreTap  = { onGroupMoreTap(group.groupId) }
             )
         }
 
@@ -2447,6 +2933,7 @@ private fun AadhaarPairCard(
     onDocumentClick : (Document) -> Unit,
     onMoreTap       : (Document) -> Unit,
     onFillSlot      : (side: String) -> Unit,
+    onGroupMoreTap  : () -> Unit = {},
 ) {
     val aadhaarBlue = Color(0xFF2563EB)
 
@@ -2505,6 +2992,21 @@ private fun AadhaarPairCard(
                     color      = if (group.isComplete) aadhaarBlue else Color(0xFFD97706),
                     fontSize   = 9.sp,
                     fontWeight = FontWeight.SemiBold
+                )
+            }
+            // ── 3-dot menu button ─────────────────────────────────────────────
+            Box(
+                Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(BgSurface)
+                    .clickable(onClick = onGroupMoreTap),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.MoreVert, null,
+                    tint     = InkMid,
+                    modifier = Modifier.size(14.dp)
                 )
             }
         }
@@ -2711,11 +3213,7 @@ private fun UnpairedAadhaarTile(
         )
 
         // Side label badge (FRONT / BACK / unknown)
-        val sideText = when (doc.aadhaarSide) {
-            "FRONT" -> "Front"
-            "BACK"  -> "Back"
-            else    -> "?"
-        }
+        val sideText = doc.aadhaarSideLabel()
         Box(
             Modifier
                 .align(Alignment.TopStart)
@@ -2876,5 +3374,3 @@ private fun GroupedTile(
         }
     }
 }
-
-
