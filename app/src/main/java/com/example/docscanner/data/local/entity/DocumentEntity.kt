@@ -20,4 +20,9 @@ data class DocumentEntity(
     val aadhaarGroupId: String? = null,
     val sessionId: String? = null,   // ← new, null = global doc scanner
     val docGroupId: String? = null,
+    val aadhaarName: String? = null,
+    val aadhaarDob: String? = null,
+    val aadhaarGender: String? = null,
+    val aadhaarMaskedNumber: String? = null,
+    val aadhaarAddress: String? = null,
 )

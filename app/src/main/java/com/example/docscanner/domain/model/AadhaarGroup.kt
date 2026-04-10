@@ -8,5 +8,9 @@ data class AadhaarGroup(
     val isManuallyGrouped: Boolean = false
 ) {
     val isComplete get() = frontDoc != null && backDoc != null
-    val displayName get() = holderName ?: "Unknown holder"
+    val displayName get() = frontDoc?.aadhaarName ?: backDoc?.aadhaarName ?: holderName ?: "Unknown holder"
+    val dateOfBirth get() = frontDoc?.aadhaarDob ?: backDoc?.aadhaarDob
+    val gender get() = frontDoc?.aadhaarGender ?: backDoc?.aadhaarGender
+    val maskedNumber get() = frontDoc?.aadhaarMaskedNumber ?: backDoc?.aadhaarMaskedNumber
+    val address get() = backDoc?.aadhaarAddress ?: frontDoc?.aadhaarAddress
 }

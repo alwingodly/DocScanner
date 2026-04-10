@@ -191,6 +191,11 @@ class ScannerViewModel @Inject constructor(
                     var detectedLabel  : String? = null
                     var aadhaarSide    : String? = null
                     var aadhaarGroupId : String? = null
+                    var aadhaarName    : String? = null
+                    var aadhaarDob     : String? = null
+                    var aadhaarGender  : String? = null
+                    var aadhaarMaskedNumber: String? = null
+                    var aadhaarAddress : String? = null
 
                     // Hashes — never store raw digits beyond this function scope
                     var aadhaarNumHash  : String? = null   // hash of full 12 digits
@@ -225,6 +230,12 @@ class ScannerViewModel @Inject constructor(
                                 Log.e("AadhaarDebug", "Folder OCR failed", e)
                                 null
                             }
+
+                            aadhaarName = ocrFields?.name?.replace("_", " ")
+                            aadhaarDob = ocrFields?.dob
+                            aadhaarGender = ocrFields?.gender
+                            aadhaarMaskedNumber = maskAadhaarNumber(ocrFields?.idNumber)
+                            aadhaarAddress = ocrFields?.address
 
                             // Compute hashes immediately — raw digits not kept
                             val rawDigits = ocrFields?.idNumber?.filter { it.isDigit() }
@@ -270,6 +281,12 @@ class ScannerViewModel @Inject constructor(
                             Log.e("AadhaarDebug", "OCR failed", e)
                             null
                         }
+
+                        aadhaarName = ocrFields?.name?.replace("_", " ")
+                        aadhaarDob = ocrFields?.dob
+                        aadhaarGender = ocrFields?.gender
+                        aadhaarMaskedNumber = maskAadhaarNumber(ocrFields?.idNumber)
+                        aadhaarAddress = ocrFields?.address
 
                         // buildSmartName uses only last-4 of idNumber — acceptable per UIDAI masking standard
                         smartName = try {
@@ -340,7 +357,12 @@ class ScannerViewModel @Inject constructor(
                             createdAt      = System.currentTimeMillis(),
                             sessionId      = freshState.sessionId,
                             aadhaarSide    = aadhaarSide,
-                            aadhaarGroupId = aadhaarGroupId
+                            aadhaarGroupId = aadhaarGroupId,
+                            aadhaarName = aadhaarName,
+                            aadhaarDob = aadhaarDob,
+                            aadhaarGender = aadhaarGender,
+                            aadhaarMaskedNumber = aadhaarMaskedNumber,
+                            aadhaarAddress = aadhaarAddress
                         )
                     )
 
@@ -678,6 +700,11 @@ class ScannerViewModel @Inject constructor(
             ?.takeLast(4)                // ← last 4 only, never full number
             ?.let { if (it.length == 4) parts.add(it) }
         return if (parts.isEmpty()) null else parts.joinToString("_")
+    }
+
+    private fun maskAadhaarNumber(idNumber: String?): String? {
+        val last4 = idNumber?.filter { it.isDigit() }?.takeLast(4)
+        return if (last4 != null && last4.length == 4) "xxxx xxxx $last4" else null
     }
 
     fun dismissMismatches() {

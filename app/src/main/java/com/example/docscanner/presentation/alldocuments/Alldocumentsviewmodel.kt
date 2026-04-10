@@ -103,11 +103,13 @@ class AllDocumentsViewModel @Inject constructor(
                         .maxByOrNull { it.createdAt }
 
                     // ── Always prefer front doc name, fall back to back ──────────
-                    val holderName = (front ?: back)
-                        ?.name
-                        ?.substringBefore("_Aadhaar")
-                        ?.replace("_", " ")
-                        ?.ifBlank { null }
+                    val holderName = front?.aadhaarName
+                        ?: back?.aadhaarName
+                        ?: (front ?: back)
+                            ?.name
+                            ?.substringBefore("_Aadhaar")
+                            ?.replace("_", " ")
+                            ?.ifBlank { null }
 
                     AadhaarGroup(
                         groupId           = groupId,

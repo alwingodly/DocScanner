@@ -17,7 +17,10 @@ import kotlin.coroutines.resume
 data class ExtractedFields(
     val name: String? = null,
     val idNumber: String? = null,   // always full 12-digit for Aadhaar, no spaces
-    val rawText: String = ""
+    val rawText: String = "",
+    val dob: String? = null,
+    val gender: String? = null,
+    val address: String? = null
 )
 
 @Singleton
@@ -44,6 +47,14 @@ class MlKitOcrHelper @Inject constructor(@ApplicationContext context: Context) {
 
         // ── Name & Label Patterns ───────────────────────────────────────────
         private val NAME_LABEL    = Regex("""(?:Name|नाम)\s*[:\-]?\s*(.+)""", RegexOption.IGNORE_CASE)
+        private val DOB_LABEL     = Regex(
+            """(?:DOB|Date\s*of\s*Birth|Year\s*of\s*Birth|जन्म\s*(?:तिथि|वर्ष))\s*[:\-]?\s*([0-9]{2}[/-][0-9]{2}[/-][0-9]{4}|[0-9]{4})""",
+            RegexOption.IGNORE_CASE
+        )
+        private val DOB_FALLBACK  = Regex("""\b\d{2}[/-]\d{2}[/-]\d{4}\b""")
+        private val GENDER_LABEL  = Regex("""\b(MALE|FEMALE|TRANSGENDER)\b""", RegexOption.IGNORE_CASE)
+        private val ADDRESS_LABEL = Regex("""(?:Address|पता)\s*[:\-]?\s*(.*)""", RegexOption.IGNORE_CASE)
+        private val PIN_CODE      = Regex("""\b\d{6}\b""")
         private val NUMBER_HEAVY  = Regex("""^[\d\s/\-.:,]+$""")
         private val SPECIAL_CHARS = Regex("""[^A-Za-z\s]""")
 
@@ -92,9 +103,23 @@ class MlKitOcrHelper @Inject constructor(@ApplicationContext context: Context) {
             DocClassType.AADHAAR_FRONT,
             DocClassType.AADHAAR_BACK -> {
                 val number = findAadhaarInStructuredBlocks(structuredResult)
-                val name   = extractName(fullRawText)
+                val name   = extractAadhaarName(fullRawText)
+                val dob    = extractDob(fullRawText)
+                val gender = extractGender(fullRawText)
+                val address = if (docType == DocClassType.AADHAAR_BACK) {
+                    extractAddress(fullRawText)
+                } else {
+                    null
+                }
                 Log.d(TAG, "Aadhaar extracted → name=$name | number=$number")
-                ExtractedFields(name = name, idNumber = number, rawText = fullRawText)
+                ExtractedFields(
+                    name = name,
+                    idNumber = number,
+                    rawText = fullRawText,
+                    dob = dob,
+                    gender = gender,
+                    address = address
+                )
             }
 
             DocClassType.PAN      -> extractPanFields(fullRawText)
@@ -192,13 +217,98 @@ class MlKitOcrHelper @Inject constructor(@ApplicationContext context: Context) {
         return ExtractedFields(name, pan, text)
     }
 
+    private fun extractAadhaarName(text: String): String? {
+        val lines = text.lines().map { it.trim() }.filter { it.isNotBlank() }
+
+        for (line in lines) {
+            val match = NAME_LABEL.find(line) ?: continue
+            val candidate = sanitizeName(match.groupValues.getOrElse(1) { "" })
+            val validated = validateAadhaarName(candidate)
+            if (validated != null) return formatName(validated)
+        }
+
+        val anchorIndex = lines.indexOfFirst { line ->
+            DOB_LABEL.containsMatchIn(line) ||
+                DOB_FALLBACK.containsMatchIn(line) ||
+                GENDER_LABEL.containsMatchIn(line) ||
+                AADHAAR_12.containsMatchIn(line)
+        }
+
+        if (anchorIndex >= 0) {
+            val windowStart = maxOf(0, anchorIndex - 3)
+            val windowCandidates = lines.subList(windowStart, anchorIndex)
+                .asReversed()
+                .mapNotNull { validateAadhaarName(sanitizeName(it)) }
+            if (windowCandidates.isNotEmpty()) {
+                return formatName(windowCandidates.first())
+            }
+        }
+
+        return lines
+            .mapNotNull { validateAadhaarName(sanitizeName(it)) }
+            .firstOrNull()
+            ?.let(::formatName)
+    }
+
+    private fun extractDob(text: String): String? {
+        DOB_LABEL.find(text)?.groupValues?.getOrNull(1)?.trim()?.let { return it }
+        return DOB_FALLBACK.find(text)?.value
+    }
+
+    private fun extractGender(text: String): String? =
+        GENDER_LABEL.find(text)?.value?.uppercase()
+
+    private fun extractAddress(text: String): String? {
+        val lines = text.lines().map { it.trim() }.filter { it.isNotBlank() }
+        val collected = mutableListOf<String>()
+        var collecting = false
+
+        for (line in lines) {
+            if (!collecting) {
+                val match = ADDRESS_LABEL.find(line) ?: continue
+                collecting = true
+                val firstLine = match.groupValues.getOrElse(1) { "" }.trim()
+                if (firstLine.isNotBlank()) collected += firstLine
+                if (PIN_CODE.containsMatchIn(firstLine)) break
+                continue
+            }
+
+            val lower = line.lowercase()
+            if (
+                lower.contains("uidai") ||
+                lower.contains("www.") ||
+                lower.contains("help@") ||
+                lower.contains("1947") ||
+                lower.contains("enrolment") ||
+                lower.contains("enrollment") ||
+                lower.contains("vid") ||
+                lower.contains("download")
+            ) {
+                break
+            }
+
+            collected += line
+            if (PIN_CODE.containsMatchIn(line) || collected.size >= 6) break
+        }
+
+        return collected
+            .joinToString(", ")
+            .replace("\\s+".toRegex(), " ")
+            .removePrefix("Address :")
+            .removePrefix("Address:")
+            .removePrefix("address :")
+            .removePrefix("address:")
+            .trim()
+            .ifBlank { null }
+    }
+
     private fun extractName(text: String): String? {
         val lines = text.lines().map { it.trim() }.filter { it.isNotBlank() }
 
         // Pass 1: Label detection
         for (line in lines) {
             val m = NAME_LABEL.find(line) ?: continue
-            val raw = m.groupValues[1].replace(SPECIAL_CHARS, "").trim()
+            val raw = sanitizeName(m.groupValues[1])
             if (raw.length >= 3 && !isHeaderLine(raw)) return formatName(raw)
         }
 
@@ -207,11 +317,40 @@ class MlKitOcrHelper @Inject constructor(@ApplicationContext context: Context) {
             if (line.length !in 3..40 || isHeaderLine(line) ||
                 NUMBER_HEAVY.matches(line) || line.any { it.isDigit() }) continue
 
-            val cleaned = line.replace(SPECIAL_CHARS, "").trim()
+            val cleaned = sanitizeName(line)
             val words = cleaned.split("\\s+".toRegex())
             if (words.size in 1..4 && words.all { it.length >= 2 }) return formatName(cleaned)
         }
         return null
+    }
+
+    private fun sanitizeName(raw: String): String =
+        raw
+            .replace(SPECIAL_CHARS, " ")
+            .replace("\\s+".toRegex(), " ")
+            .trim()
+
+    private fun validateAadhaarName(candidate: String): String? {
+        if (candidate.length !in 3..40) return null
+        if (NUMBER_HEAVY.matches(candidate) || candidate.any { it.isDigit() }) return null
+        if (isHeaderLine(candidate)) return null
+
+        val normalized = candidate.lowercase()
+        val disallowedPhrases = listOf(
+            "government of india",
+            "unique identification authority",
+            "government",
+            "bharat sarkar",
+            "aadhaar",
+            "enrolment"
+        )
+        if (disallowedPhrases.any { normalized.contains(it) }) return null
+
+        val words = candidate.split("\\s+".toRegex())
+        if (words.size !in 1..4) return null
+        if (words.any { it.length < 2 }) return null
+
+        return candidate
     }
 
     private fun isHeaderLine(line: String): Boolean {

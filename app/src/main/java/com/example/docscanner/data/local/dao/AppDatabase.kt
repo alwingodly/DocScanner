@@ -18,7 +18,7 @@ import com.example.docscanner.data.local.entity.FolderEntity
         ApplicationDocumentEntity::class,
         DocGroupEntity::class           // ← new
     ],
-    version = 13,
+    version = 14,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -96,6 +96,16 @@ abstract class AppDatabase : RoomDatabase() {
                         createdAt INTEGER NOT NULL
                     )
                 """)
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarName TEXT")
+                db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarDob TEXT")
+                db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarGender TEXT")
+                db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarMaskedNumber TEXT")
+                db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarAddress TEXT")
             }
         }
 

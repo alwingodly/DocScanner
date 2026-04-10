@@ -139,6 +139,11 @@ fun DocumentEntity.toDomain() = Document(
     aadhaarSide           = aadhaarSide,
     aadhaarGroupId        = aadhaarGroupId,
     docGroupId            = docGroupId,
+    aadhaarName           = aadhaarName,
+    aadhaarDob            = aadhaarDob,
+    aadhaarGender         = aadhaarGender,
+    aadhaarMaskedNumber   = aadhaarMaskedNumber,
+    aadhaarAddress        = aadhaarAddress,
 )
 
 fun Document.toEntity() = DocumentEntity(
@@ -156,4 +161,9 @@ fun Document.toEntity() = DocumentEntity(
     aadhaarSide           = aadhaarSide,
     aadhaarGroupId        = aadhaarGroupId,
     docGroupId            = docGroupId,
+    aadhaarName           = aadhaarName,
+    aadhaarDob            = aadhaarDob,
+    aadhaarGender         = aadhaarGender,
+    aadhaarMaskedNumber   = aadhaarMaskedNumber,
+    aadhaarAddress        = aadhaarAddress,
 )

@@ -91,9 +91,13 @@ data class Document(
     val aadhaarSide: String? = null,
     val aadhaarGroupId: String? = null,
     val docGroupId: String? = null,         // ← new generic group
+    val aadhaarName: String? = null,
+    val aadhaarDob: String? = null,
+    val aadhaarGender: String? = null,
+    val aadhaarMaskedNumber: String? = null,
+    val aadhaarAddress: String? = null,
 ) {
     val isMergedPdf: Boolean get() = !mergedFromDocumentIds.isNullOrEmpty()
     val sourceDocumentIds: List<String>
         get() = mergedFromDocumentIds?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
 }
-

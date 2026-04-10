@@ -2400,43 +2400,6 @@ private fun AadhaarHalfTile(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SELECT GRID — same photo grid layout, with selection overlay
-// ═══════════════════════════════════════════════════════════════════════════════
-
-@Composable
-private fun GallerySelectGrid(
-    documents: List<Document>,
-    selectedIds: Set<String>,
-    columnCount: Int,
-    onSelect: (String) -> Unit
-) {
-    val rows = remember(documents, columnCount) { documents.chunked(columnCount) }
-    val gap = 2.dp
-
-    LazyColumn(
-        contentPadding = PaddingValues(bottom = 130.dp),
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(gap)
-    ) {
-        rows.forEach { rowDocs ->
-            item(key = rowDocs.first().id) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
-                    rowDocs.forEach { doc ->
-                        SelectTile(
-                            doc = doc,
-                            isSelected = doc.id in selectedIds,
-                            modifier = Modifier.weight(1f)
-                        ) { onSelect(doc.id) }
-                    }
-                    repeat(columnCount - rowDocs.size) { Spacer(Modifier.weight(1f)) }
-                }
-            }
-        }
-        item("bottom") { Spacer(Modifier.height(20.dp)) }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // TILE COMPOSABLES
 // ═══════════════════════════════════════════════════════════════════════════════
 @OptIn(ExperimentalFoundationApi::class)
