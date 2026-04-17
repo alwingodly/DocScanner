@@ -120,6 +120,48 @@ class DocumentRepository @Inject constructor(
 
     suspend fun getGlobalAadhaarDocs(): List<Document> =
         documentDao.getGlobalAadhaarDocs().map { it.toDomain() }
+
+    // ── Passport pairing ──────────────────────────────────────────────────────
+
+    suspend fun updatePassportGroup(docId: String, side: String?, groupId: String?, holderName: String?) {
+        documentDao.updatePassportGroup(docId, side, groupId, holderName)
+    }
+
+    suspend fun updatePassportGroupIdOnly(docId: String, groupId: String) {
+        documentDao.updatePassportGroupIdOnly(docId, groupId)
+    }
+
+    suspend fun getExistingPassportDocs(sessionId: String): List<Document> =
+        documentDao.getExistingPassportDocs(sessionId).map { it.toDomain() }
+
+    suspend fun getGlobalPassportDocs(): List<Document> =
+        documentDao.getGlobalPassportDocs().map { it.toDomain() }
+
+    suspend fun getPassportDocsByHash(hash: String): List<Document> =
+        documentDao.getPassportDocsByHash(hash).map { it.toDomain() }
+
+    suspend fun getUnpairedPassportDocs(sessionId: String?): List<Document> =
+        if (sessionId != null)
+            documentDao.getUnpairedPassportDocs(sessionId).map { it.toDomain() }
+        else
+            documentDao.getUnpairedGlobalPassportDocs().map { it.toDomain() }
+
+
+    /** All FRONT-side passports (has group, no back yet) in session/global scope. */
+    suspend fun getUnmatchedFrontPassports(sessionId: String?): List<Document> {
+        val all = if (sessionId != null)
+            documentDao.getExistingPassportDocs(sessionId).map { it.toDomain() }
+        else
+            documentDao.getGlobalPassportDocs().map { it.toDomain() }
+
+        val frontGroupIds = all.filter { it.passportSide == "FRONT" && it.passportGroupId != null }
+            .map { it.passportGroupId!! }.toSet()
+        val backGroupIds  = all.filter { it.passportSide == "BACK"  && it.passportGroupId != null }
+            .map { it.passportGroupId!! }.toSet()
+        val unmatchedGroupIds = frontGroupIds - backGroupIds
+
+        return all.filter { it.passportGroupId in unmatchedGroupIds && it.passportSide == "FRONT" }
+    }
 }
 
 // ── Mappers ───────────────────────────────────────────────────────────────────
@@ -144,6 +186,12 @@ fun DocumentEntity.toDomain() = Document(
     aadhaarGender         = aadhaarGender,
     aadhaarMaskedNumber   = aadhaarMaskedNumber,
     aadhaarAddress        = aadhaarAddress,
+    extractedDetailsJson  = extractedDetailsJson,
+    ocrRawText            = ocrRawText,
+    passportGroupId       = passportGroupId,
+    passportSide          = passportSide,
+    passportHolderName    = passportHolderName,
+    passportNumHash       = passportNumHash,
 )
 
 fun Document.toEntity() = DocumentEntity(
@@ -166,4 +214,10 @@ fun Document.toEntity() = DocumentEntity(
     aadhaarGender         = aadhaarGender,
     aadhaarMaskedNumber   = aadhaarMaskedNumber,
     aadhaarAddress        = aadhaarAddress,
+    extractedDetailsJson  = extractedDetailsJson,
+    ocrRawText            = ocrRawText,
+    passportGroupId       = passportGroupId,
+    passportSide          = passportSide,
+    passportHolderName    = passportHolderName,
+    passportNumHash       = passportNumHash,
 )

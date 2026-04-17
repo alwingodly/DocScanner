@@ -4,14 +4,21 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.docscanner.data.masking.AadhaarMasker
 import com.example.docscanner.data.masking.PanMasker
+import com.example.docscanner.data.ocr.fusion.ExtractionFusion
 import com.example.docscanner.domain.model.AadhaarGroup
+import com.example.docscanner.domain.model.PassportGroup
+import com.example.docscanner.domain.model.DocClassType
 import com.example.docscanner.domain.model.Document
+import com.example.docscanner.domain.model.DocumentDetail
+import com.example.docscanner.domain.model.ExtractedFields
 import com.example.docscanner.domain.model.Folder
+import com.example.docscanner.domain.model.toDocumentDetailsJson
 import com.example.docscanner.domain.repository.DocumentRepository
 import com.example.docscanner.domain.repository.FolderRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -37,7 +44,8 @@ class AllDocumentsViewModel @Inject constructor(
     private val documentRepository : DocumentRepository,
     private val folderRepository   : FolderRepository,
     private val aadhaarMasker      : AadhaarMasker,
-    private val panMasker          : PanMasker
+    private val panMasker          : PanMasker,
+    private val extractionFusion   : ExtractionFusion
 ) : ViewModel() {
 
     // ── SharedPreferences ─────────────────────────────────────────────────────
@@ -132,6 +140,36 @@ class AllDocumentsViewModel @Inject constructor(
     fun getGroupDocs(groupId: String): Flow<List<Document>> =
         documentRepository.getDocsByGroup(groupId)
 
+    // ── Passport groups ───────────────────────────────────────────────────────
+
+    val passportGroups: StateFlow<List<PassportGroup>> = documents
+        .map { docs ->
+            docs
+                .filter { it.docClassLabel == "Passport" }
+                .filter { it.passportGroupId != null }
+                .groupBy { it.passportGroupId!! }
+                .map { (groupId, groupDocs) ->
+                    val front = groupDocs.filter { it.passportSide == "FRONT" }
+                        .maxByOrNull { it.createdAt }
+                    val back  = groupDocs.filter { it.passportSide == "BACK" }
+                        .maxByOrNull { it.createdAt }
+                    val holderName = front?.passportHolderName ?: back?.passportHolderName
+                    PassportGroup(
+                        groupId           = groupId,
+                        holderName        = holderName,
+                        frontDoc          = front,
+                        backDoc           = back,
+                        isManuallyGrouped = groupDocs.any {
+                            it.passportGroupId?.startsWith("manual_pp_") == true
+                        }
+                    )
+                }
+                .sortedByDescending {
+                    maxOf(it.frontDoc?.createdAt ?: 0L, it.backDoc?.createdAt ?: 0L)
+                }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     // ── Generic doc groups ────────────────────────────────────────────────────
 
     val docGroups: StateFlow<Map<String, List<Document>>> = documents
@@ -171,6 +209,44 @@ class AllDocumentsViewModel @Inject constructor(
         viewModelScope.launch {
             listOfNotNull(group.frontDoc, group.backDoc).forEach { doc ->
                 documentRepository.updateAadhaarGroup(doc.id, doc.aadhaarSide, null)
+            }
+        }
+    }
+
+    fun manuallyGroupPassport(docId1: String, docId2: String) {
+        viewModelScope.launch {
+            val doc1 = documents.value.firstOrNull { it.id == docId1 } ?: return@launch
+            val doc2 = documents.value.firstOrNull { it.id == docId2 } ?: return@launch
+            val groupId = "manual_pp_${System.currentTimeMillis()}"
+            val (side1, side2) = when {
+                doc1.passportSide != null && doc2.passportSide != null ->
+                    doc1.passportSide to doc2.passportSide
+                doc1.passportSide != null ->
+                    doc1.passportSide to if (doc1.passportSide == "FRONT") "BACK" else "FRONT"
+                doc2.passportSide != null ->
+                    (if (doc2.passportSide == "FRONT") "BACK" else "FRONT") to doc2.passportSide
+                else -> "FRONT" to "BACK"
+            }
+            documentRepository.updatePassportGroup(docId1, side1, groupId, doc1.passportHolderName)
+            documentRepository.updatePassportGroup(docId2, side2, groupId, doc2.passportHolderName)
+        }
+    }
+
+    fun ungroupPassport(group: PassportGroup) {
+        viewModelScope.launch {
+            listOfNotNull(group.frontDoc, group.backDoc).forEach { doc ->
+                documentRepository.updatePassportGroup(doc.id, doc.passportSide, null, doc.passportHolderName)
+            }
+        }
+    }
+
+    fun swapPassportSides(group: PassportGroup) {
+        viewModelScope.launch {
+            group.frontDoc?.let {
+                documentRepository.updatePassportGroup(it.id, "BACK", group.groupId, it.passportHolderName)
+            }
+            group.backDoc?.let {
+                documentRepository.updatePassportGroup(it.id, "FRONT", group.groupId, it.passportHolderName)
             }
         }
     }
@@ -346,6 +422,30 @@ class AllDocumentsViewModel @Inject constructor(
         viewModelScope.launch { documentRepository.renameDocument(document.id, newName) }
     }
 
+    fun updateDocumentExtractedDetails(document: Document, details: List<DocumentDetail>) {
+        val cleaned = details.mapNotNull { detail ->
+            val label = detail.label.trim()
+            val value = detail.value.trim()
+            if (label.isEmpty() || value.isEmpty()) null
+            else detail.copy(label = label, value = value)
+        }
+
+        val updatedDocument = if (document.docClassLabel?.startsWith("Aadhaar") == true) {
+            document.copy(
+                extractedDetailsJson = cleaned.toDocumentDetailsJson(),
+                aadhaarName = cleaned.valueForAny("Name") ?: document.aadhaarName,
+                aadhaarDob = cleaned.valueForAny("DOB", "Date Of Birth") ?: document.aadhaarDob,
+                aadhaarGender = cleaned.valueForAny("Gender") ?: document.aadhaarGender,
+                aadhaarMaskedNumber = cleaned.valueForAny("Aadhaar", "Aadhaar Number") ?: document.aadhaarMaskedNumber,
+                aadhaarAddress = cleaned.valueForAny("Address") ?: document.aadhaarAddress
+            )
+        } else {
+            document.copy(extractedDetailsJson = cleaned.toDocumentDetailsJson())
+        }
+
+        viewModelScope.launch { documentRepository.saveDocument(updatedDocument) }
+    }
+
     fun changeDocumentType(document: Document, newLabel: String) {
         viewModelScope.launch {
             val groupId = document.docGroupId
@@ -353,12 +453,14 @@ class AllDocumentsViewModel @Inject constructor(
                 val groupDocs = documents.value.filter { it.docGroupId == groupId }
                 groupDocs.forEach { doc ->
                     documentRepository.updateDocClassLabel(doc.id, newLabel)
+                    refreshExtractionForType(doc, newLabel)
                     syncAadhaarMetadata(doc, newLabel)
                     if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card")
                         applyMaskingIfNeeded(doc, newLabel)
                 }
             } else {
                 documentRepository.updateDocClassLabel(document.id, newLabel)
+                refreshExtractionForType(document, newLabel)
                 syncAadhaarMetadata(document, newLabel)
                 if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card")
                     applyMaskingIfNeeded(document, newLabel)
@@ -422,6 +524,84 @@ class AllDocumentsViewModel @Inject constructor(
             Log.e("AllDocumentsVM", "Masking on type change failed", e)
         }
     }
+
+    private suspend fun refreshExtractionForType(document: Document, newLabel: String) {
+        val bitmap = loadBitmapFromPath(document.thumbnailPath) ?: return
+        val docType = labelToDocType(newLabel) ?: return
+        runCatching {
+            val fields = extractionFusion.extract(bitmap, docType)
+            val updated = document.withExtractionForType(newLabel, fields)
+            documentRepository.saveDocument(updated)
+        }.onFailure {
+            Log.e("AllDocumentsVM", "Re-extraction on type change failed", it)
+        }
+    }
+
+    private fun labelToDocType(label: String): DocClassType? = when (label) {
+        "Aadhaar Front" -> DocClassType.AADHAAR_FRONT
+        "Aadhaar Back"  -> DocClassType.AADHAAR_BACK
+        "PAN Card"      -> DocClassType.PAN
+        "Voter ID"      -> DocClassType.VOTER_ID
+        "Passport"      -> DocClassType.PASSPORT
+        else            -> DocClassType.OTHER
+    }
+
+    private fun Document.withExtractionForType(
+        newLabel: String,
+        fields: ExtractedFields
+    ): Document {
+        val detailsJson = fields.details.toDocumentDetailsJson()
+        val resetAadhaar = !newLabel.startsWith("Aadhaar")
+        val base = copy(
+            docClassLabel = newLabel,
+            extractedDetailsJson = detailsJson,
+            ocrRawText = null,
+            aadhaarName = if (resetAadhaar) null else aadhaarName,
+            aadhaarDob = if (resetAadhaar) null else aadhaarDob,
+            aadhaarGender = if (resetAadhaar) null else aadhaarGender,
+            aadhaarMaskedNumber = if (resetAadhaar) null else aadhaarMaskedNumber,
+            aadhaarAddress = if (resetAadhaar) null else aadhaarAddress
+        )
+        return when (fields) {
+            is ExtractedFields.AadhaarFront -> base.copy(
+                aadhaarName = fields.name,
+                aadhaarDob = fields.dob,
+                aadhaarGender = fields.gender,
+                aadhaarMaskedNumber = fields.idNumber
+                    ?.filter { it.isDigit() }
+                    ?.takeLast(4)
+                    ?.takeIf { it.length == 4 }
+                    ?.let { "xxxx xxxx $it" }
+            )
+            is ExtractedFields.AadhaarBack -> base.copy(
+                aadhaarAddress = fields.address,
+                aadhaarMaskedNumber = fields.idNumber
+                    ?.filter { it.isDigit() }
+                    ?.takeLast(4)
+                    ?.takeIf { it.length == 4 }
+                    ?.let { "xxxx xxxx $it" }
+            )
+            else -> base
+        }
+    }
+
+    private fun loadBitmapFromPath(path: String?): Bitmap? {
+        if (path.isNullOrBlank()) return null
+        return try {
+            val uri = Uri.parse(path)
+            when (uri.scheme) {
+                "file" -> BitmapFactory.decodeFile(uri.path)
+                "content" -> appContext.contentResolver.openInputStream(uri)
+                    ?.use { BitmapFactory.decodeStream(it) }
+                else -> BitmapFactory.decodeFile(path)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun List<DocumentDetail>.valueForAny(vararg labels: String): String? =
+        firstOrNull { detail -> labels.any { label -> detail.label.equals(label, ignoreCase = true) } }?.value
 
     fun updateClassification(document: Document, label: String) {
         viewModelScope.launch { documentRepository.updateClassification(document.id, label) }

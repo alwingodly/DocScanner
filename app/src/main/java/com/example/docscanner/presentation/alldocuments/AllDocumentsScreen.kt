@@ -4,12 +4,18 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -53,9 +59,12 @@ import com.example.docscanner.domain.model.Document
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.ui.graphics.nativeCanvas
 import com.example.docscanner.domain.model.Folder
+import com.example.docscanner.presentation.shared.ScanSaveFeedback
 import com.example.docscanner.presentation.shared.ScannedMismatch
+import kotlinx.coroutines.delay
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 internal val BgBase = Color(0xFFF7F5F2)
@@ -115,6 +124,9 @@ fun AllDocumentsScreen(
     pendingMismatches   : List<ScannedMismatch> = emptyList(),
     onResolveMismatch   : (docId: String, label: String) -> Unit = { _, _ -> },
     onDismissMismatches : () -> Unit = {},
+    isScanProcessing    : Boolean = false,
+    scanFeedback        : ScanSaveFeedback? = null,
+    onScanFeedbackShown : () -> Unit = {},
     onGroupTap: (String) -> Unit = {},
     ) {
     val allDocuments by viewModel.documents.collectAsState()
@@ -127,12 +139,14 @@ fun AllDocumentsScreen(
     var renameText by remember { mutableStateOf("") }
     var contextDoc by remember { mutableStateOf<Document?>(null) }
     var showMoveSheet by remember { mutableStateOf(false) }
-    val aadhaarGroups by viewModel.aadhaarGroups.collectAsState()
-    val docGroups by viewModel.docGroups.collectAsState()
+    val aadhaarGroups   by viewModel.aadhaarGroups.collectAsState()
+    val passportGroups  by viewModel.passportGroups.collectAsState()
+    val docGroups       by viewModel.docGroups.collectAsState()
     var showGroupNameDialog by remember { mutableStateOf(false) }
     var pendingGroupDocIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var groupNameText by remember { mutableStateOf("") }
-    var contextAadhaarGroupId by remember { mutableStateOf<String?>(null) }
+    var contextAadhaarGroupId   by remember { mutableStateOf<String?>(null) }
+    var contextPassportGroupId  by remember { mutableStateOf<String?>(null) }
 
 
     val contextAadhaarGroup = remember(contextDoc, aadhaarGroups) {
@@ -171,6 +185,7 @@ fun AllDocumentsScreen(
     var pendingAadhaarPairId by remember { mutableStateOf<String?>(null) }
 
     val hasFolders = filteredGrouped.isNotEmpty()
+    val feedbackBottomPadding = if (isSelectMode) 20.dp else 96.dp
 
     LaunchedEffect(isSelectMode) {
         if (!isSelectMode) {
@@ -193,6 +208,12 @@ fun AllDocumentsScreen(
     val documentCount = documents.size
     LaunchedEffect(selectedCount) { onSelectedCountChanged(selectedCount) }
     LaunchedEffect(documentCount) { onDocumentCountChanged(documentCount) }
+    LaunchedEffect(scanFeedback?.id, isScanProcessing) {
+        if (!isScanProcessing && scanFeedback != null) {
+            delay(3200)
+            onScanFeedbackShown()
+        }
+    }
 
     LaunchedEffect(selectAllTrigger) {
         if (selectAllTrigger > 0 && isSelectMode) {
@@ -262,7 +283,9 @@ fun AllDocumentsScreen(
                     selectedOrder = ids                      // ← only this section, fresh
                 },
                 aadhaarGroups        = aadhaarGroups,
+                passportGroups       = passportGroups,
                 onManualGroup        = { id1, id2 -> viewModel.manuallyGroupAadhaar(id1, id2) },
+                onManualPassportGroup = { id1, id2 -> viewModel.manuallyGroupPassport(id1, id2) },
                 onAddToGroup = { docId, groupId, side ->
                     viewModel.addDocToExistingGroup(docId, groupId, side)
                 },
@@ -271,10 +294,26 @@ fun AllDocumentsScreen(
                 selectedOrder = selectedOrder,
                 onGroupMoreTap = { groupId -> contextGroupId = groupId },
                 docGroupNames = docGroupNames,
-                onAadhaarGroupMoreTap = { groupId -> contextAadhaarGroupId = groupId },
+                onAadhaarGroupMoreTap  = { groupId -> contextAadhaarGroupId  = groupId },
+                onPassportGroupMoreTap = { groupId -> contextPassportGroupId = groupId },
                 pendingAadhaarPairId = pendingAadhaarPairId,
                 onPendingAadhaarPairChange = { pendingAadhaarPairId = it },
                 groupingScopeIds = groupingScopeIds,
+            )
+        }
+
+        AnimatedVisibility(
+            visible = isScanProcessing || scanFeedback != null,
+            enter = slideInVertically(initialOffsetY = { it / 2 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 2 }) + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp, vertical = feedbackBottomPadding)
+        ) {
+            ScanFeedbackBanner(
+                isProcessing = isScanProcessing,
+                feedback = scanFeedback
             )
         }
 
@@ -383,8 +422,11 @@ fun AllDocumentsScreen(
                     .navigationBarsPadding()
                     .shadow(20.dp, RoundedCornerShape(18.dp), ambientColor = Coral.copy(0.35f))
                     .clip(RoundedCornerShape(18.dp))
-                    .background(Brush.linearGradient(listOf(Coral, CoralDark)))
-                    .clickable(onClick = onScanClick)
+                    .background(
+                        if (isScanProcessing) Brush.linearGradient(listOf(StrokeMid, StrokeMid))
+                        else Brush.linearGradient(listOf(Coral, CoralDark))
+                    )
+                    .clickable(enabled = !isScanProcessing, onClick = onScanClick)
                     .padding(horizontal = 22.dp, vertical = 15.dp)
             ) {
                 Row(
@@ -398,7 +440,7 @@ fun AllDocumentsScreen(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        "Scan",
+                        if (isScanProcessing) "Saving..." else "Scan",
                         color = Color.White,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold
@@ -1770,6 +1812,78 @@ fun AllDocumentsScreen(
             )
         }
     }
+
+    // ── Passport pair context sheet ───────────────────────────────────────────
+    if (contextPassportGroupId != null) {
+        val ppGroupId = contextPassportGroupId!!
+        val ppGroup   = passportGroups.firstOrNull { it.groupId == ppGroupId }
+        val ppBlue    = Color(0xFF7C3AED)
+        ModalBottomSheet(
+            onDismissRequest = { contextPassportGroupId = null },
+            containerColor   = BgCard,
+            shape            = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = {
+                Box(
+                    Modifier
+                        .padding(top = 12.dp, bottom = 4.dp)
+                        .width(40.dp).height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(StrokeMid)
+                )
+            }
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 40.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier.size(42.dp).clip(RoundedCornerShape(10.dp))
+                            .background(ppBlue.copy(0.1f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("📔", fontSize = 20.sp)
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            ppGroup?.displayName ?: "Passport Pair",
+                            color = Ink, fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            if (ppGroup?.isComplete == true) "Data page + Back page"
+                            else "Incomplete pair",
+                            color = if (ppGroup?.isComplete == true) ppBlue else Color(0xFFD97706),
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+                HorizontalDivider(color = StrokeLight, thickness = 0.5.dp)
+                ContextAction(
+                    icon  = Icons.Default.SwapHoriz,
+                    label = "Swap Data / Back page",
+                    color = Color(0xFF059669)
+                ) {
+                    ppGroup?.let { viewModel.swapPassportSides(it) }
+                    Toast.makeText(context, "Sides swapped", Toast.LENGTH_SHORT).show()
+                    contextPassportGroupId = null
+                }
+                HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                    modifier = Modifier.padding(horizontal = 20.dp))
+                ContextAction(
+                    icon  = Icons.Default.LinkOff,
+                    label = "Ungroup pair",
+                    color = InkMid
+                ) {
+                    ppGroup?.let { viewModel.ungroupPassport(it) }
+                    Toast.makeText(context, "Passport pair ungrouped", Toast.LENGTH_SHORT).show()
+                    contextPassportGroupId = null
+                }
+            }
+        }
+    }
 }
 
 
@@ -1799,7 +1913,9 @@ private fun GallerySectionedGrid(
     onSelectSection: (List<Document>) -> Unit = {},
     onLongPressSection: (List<Document>) -> Unit = {},
     aadhaarGroups: List<com.example.docscanner.domain.model.AadhaarGroup> = emptyList(),
+    passportGroups: List<com.example.docscanner.domain.model.PassportGroup> = emptyList(),
     onManualGroup: (String, String) -> Unit = { _, _ -> },
+    onManualPassportGroup: (String, String) -> Unit = { _, _ -> },
     onAddToGroup: (docId: String, groupId: String, side: String) -> Unit = { _, _, _ -> },
     onGroupTap: (String) -> Unit = {},
     docGroups: Map<String, List<Document>> = emptyMap(),
@@ -1807,6 +1923,7 @@ private fun GallerySectionedGrid(
     onGroupMoreTap: (groupId: String) -> Unit = {},
     docGroupNames: Map<String, String> = emptyMap(),
     onAadhaarGroupMoreTap: (groupId: String) -> Unit = {},
+    onPassportGroupMoreTap: (groupId: String) -> Unit = {},
     pendingAadhaarPairId: String? = null,
     onPendingAadhaarPairChange: (String?) -> Unit = {},
     groupingScopeIds: Set<String>? = null
@@ -1839,7 +1956,8 @@ private fun GallerySectionedGrid(
 
             if (label !in collapsedSections) {
                 item(key = "grid_$label") {
-                    val isAadhaarSection = label.equals("Aadhaar", ignoreCase = true)
+                    val isAadhaarSection   = label.equals("Aadhaar", ignoreCase = true)
+                    val isPassportSection  = label.equals("Passport", ignoreCase = true)
 
                     if (docs.isEmpty()) {
                         FolderEmptyState(
@@ -1882,6 +2000,41 @@ private fun GallerySectionedGrid(
                             onGroupTap      = onGroupTap,
                             pendingAadhaarPairId = pendingAadhaarPairId,
                             onPendingAadhaarPairChange = onPendingAadhaarPairChange,
+                            selectionEnabled = sectionSelectionEnabled,
+                        )
+                    } else if (isPassportSection) {
+                        val ppSectionGroups = passportGroups.filter { g ->
+                            docs.any { d -> d.id == g.frontDoc?.id || d.id == g.backDoc?.id }
+                        }
+                        val orderedPassportDocs = buildList {
+                            ppSectionGroups.forEach { group ->
+                                group.frontDoc?.let(::add)
+                                group.backDoc?.let(::add)
+                            }
+                            addAll(
+                                docs.filter { d ->
+                                    ppSectionGroups.none { g ->
+                                        d.id == g.frontDoc?.id || d.id == g.backDoc?.id
+                                    }
+                                }
+                            )
+                        }
+                        GalleryPhotoGrid(
+                            docs            = orderedPassportDocs,
+                            columnCount     = columnCount,
+                            onReorder       = { from, to -> onSectionReorder(label, from, to) },
+                            onDocumentClick = onDocumentClick,
+                            onBadgeTap      = onBadgeTap,
+                            onMoreTap       = onMoreTap,
+                            onScanTap       = { folder?.let { onScanToFolder(it) } ?: onScanClick() },
+                            isSelectMode    = isSelectMode,
+                            selectedIds     = selectedIds,
+                            onSelect        = onSelect,
+                            selectedOrder   = selectedOrder,
+                            passportGroups  = ppSectionGroups,
+                            onPassportGroupMoreTap = onPassportGroupMoreTap,
+                            onManualPassportGroup = onManualPassportGroup,
+                            onGroupTap      = onGroupTap,
                             selectionEnabled = sectionSelectionEnabled,
                         )
                     } else {
@@ -2052,8 +2205,11 @@ private fun GalleryPhotoGrid(
     onGroupMoreTap: (groupId: String) -> Unit = {},
     docGroupNames:Map<String, String> = emptyMap(),
     aadhaarGroups: List<com.example.docscanner.domain.model.AadhaarGroup> = emptyList(),
+    passportGroups: List<com.example.docscanner.domain.model.PassportGroup> = emptyList(),
     onAadhaarGroupMoreTap: (groupId: String) -> Unit = {},
+    onPassportGroupMoreTap: (groupId: String) -> Unit = {},
     onManualGroup: (String, String) -> Unit = { _, _ -> },
+    onManualPassportGroup: (String, String) -> Unit = { _, _ -> },
     onAddToGroup: (docId: String, groupId: String, side: String) -> Unit = { _, _, _ -> },
     pendingAadhaarPairId: String? = null,
     onPendingAadhaarPairChange: (String?) -> Unit = {},
@@ -2062,10 +2218,12 @@ private fun GalleryPhotoGrid(
     val context = LocalContext.current
     val cardPos = remember { HashMap<Int, CardPos>() }
     var dragState by remember { mutableStateOf(DragState()) }
-    val aadhaarGroupsById = remember(aadhaarGroups) { aadhaarGroups.associateBy { it.groupId } }
-    val renderedDocs = remember(docs, docGroups, aadhaarGroups, isSelectMode, selectionEnabled) {
-        val seenGroupIds = mutableSetOf<String>()
-        val seenAadhaarGroupIds = mutableSetOf<String>()
+    val aadhaarGroupsById  = remember(aadhaarGroups)  { aadhaarGroups.associateBy  { it.groupId } }
+    val passportGroupsById = remember(passportGroups) { passportGroups.associateBy { it.groupId } }
+    val renderedDocs = remember(docs, docGroups, aadhaarGroups, passportGroups, isSelectMode, selectionEnabled) {
+        val seenGroupIds         = mutableSetOf<String>()
+        val seenAadhaarGroupIds  = mutableSetOf<String>()
+        val seenPassportGroupIds = mutableSetOf<String>()
         docs.filter { doc ->
             val aadhaarGroupId = doc.aadhaarGroupId
             if (aadhaarGroupId != null &&
@@ -2073,6 +2231,13 @@ private fun GalleryPhotoGrid(
                 (!isSelectMode || !selectionEnabled)
             ) {
                 return@filter seenAadhaarGroupIds.add(aadhaarGroupId)
+            }
+            val ppGroupId = doc.passportGroupId
+            if (ppGroupId != null &&
+                passportGroupsById.containsKey(ppGroupId) &&
+                (!isSelectMode || !selectionEnabled)
+            ) {
+                return@filter seenPassportGroupIds.add(ppGroupId)
             }
             val gid = doc.docGroupId
             if (gid == null) true
@@ -2122,6 +2287,9 @@ private fun GalleryPhotoGrid(
                         }
                         val aadhaarGroup = remember(doc.aadhaarGroupId, aadhaarGroupsById) {
                             doc.aadhaarGroupId?.let { aadhaarGroupsById[it] }
+                        }
+                        val passportGroup = remember(doc.passportGroupId, passportGroupsById) {
+                            doc.passportGroupId?.let { passportGroupsById[it] }
                         }
 
                         Box(
@@ -2206,6 +2374,18 @@ private fun GalleryPhotoGrid(
                                     onMoreTap = {
                                         if (isSelectMode && !selectionEnabled) return@AadhaarGroupedTile
                                         onAadhaarGroupMoreTap(aadhaarGroup.groupId)
+                                    }
+                                )
+                            } else if (passportGroup != null) {
+                                PassportGroupedTile(
+                                    group = passportGroup,
+                                    onTap = {
+                                        if (isSelectMode && !selectionEnabled) return@PassportGroupedTile
+                                        onGroupTap(passportGroup.groupId)
+                                    },
+                                    onMoreTap = {
+                                        if (isSelectMode && !selectionEnabled) return@PassportGroupedTile
+                                        onPassportGroupMoreTap(passportGroup.groupId)
                                     }
                                 )
                             } else if (isGrouped) {
@@ -2395,6 +2575,121 @@ private fun AadhaarHalfTile(
                 fontSize = 7.sp,
                 fontWeight = FontWeight.SemiBold
             )
+        }
+    }
+}
+
+// ── Passport pair tile ────────────────────────────────────────────────────────
+
+@Composable
+private fun PassportGroupedTile(
+    group: com.example.docscanner.domain.model.PassportGroup,
+    onTap: () -> Unit,
+    onMoreTap: () -> Unit,
+) {
+    val ppViolet = Color(0xFF7C3AED)
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(4.dp))
+            .background(BgSurface)
+            .clickable(onClick = onTap)
+    ) {
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            PassportHalfTile(doc = group.frontDoc, label = "Data Page",  modifier = Modifier.weight(1f))
+            PassportHalfTile(doc = group.backDoc,  label = "Back Page",  modifier = Modifier.weight(1f))
+        }
+
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(42.dp)
+                .align(Alignment.BottomCenter)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))))
+        )
+
+        Text(
+            group.displayName,
+            color = Color.White,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 6.dp, bottom = 6.dp, end = 28.dp)
+        )
+
+        // Passport badge (bottom-right corner)
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(4.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(ppViolet.copy(0.85f))
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+        ) {
+            Text("📔", fontSize = 7.sp)
+        }
+
+        Box(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .padding(2.dp)
+                .size(24.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onMoreTap),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.MoreVert,
+                null,
+                tint = Color.White,
+                modifier = Modifier.size(14.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PassportHalfTile(
+    doc: Document?,
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(4.dp))
+            .background(BgSurface)
+    ) {
+        if (doc?.thumbnailPath != null) {
+            AsyncImage(
+                model = doc.thumbnailPath,
+                contentDescription = label,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                Modifier.fillMaxSize().background(Color.Black.copy(0.04f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(label, color = InkDim, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+
+        Box(
+            Modifier
+                .align(Alignment.TopStart)
+                .padding(4.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(Color.Black.copy(0.55f))
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+        ) {
+            Text(label, color = Color.White, fontSize = 7.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -3203,6 +3498,88 @@ private fun UnpairedAadhaarTile(
                 tint     = Color.White,
                 modifier = Modifier.size(12.dp)
             )
+        }
+    }
+}
+
+@Composable
+fun ScanFeedbackBanner(
+    isProcessing: Boolean,
+    feedback: ScanSaveFeedback?,
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "dots")
+    val delays = listOf(0, 150, 300)
+
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = BgCard,
+        border = BorderStroke(0.5.dp, StrokeLight),
+        shadowElevation = 4.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            if (isProcessing) {
+                // Animated dots
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    delays.forEach { delay ->
+                        val alpha by infiniteTransition.animateFloat(
+                            initialValue = 0.2f, targetValue = 1f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(600, delayMillis = delay),
+                                repeatMode = RepeatMode.Reverse
+                            ), label = "dot_$delay"
+                        )
+                        Box(
+                            Modifier
+                                .size(5.dp)
+                                .graphicsLayer { this.alpha = alpha }
+                                .clip(CircleShape)
+                                .background(Coral)
+                        )
+                    }
+                }
+            } else {
+                // Check circle
+                Box(
+                    Modifier
+                        .size(16.dp)
+                        .clip(CircleShape)
+                        .background(GreenAccent.copy(0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Check, null,
+                        tint = GreenAccent,
+                        modifier = Modifier.size(9.dp)
+                    )
+                }
+            }
+
+            // Divider
+            Box(Modifier.width(0.5.dp).height(14.dp).background(StrokeLight))
+
+            // Label
+            val label = when {
+                isProcessing -> "Understanding your scan"
+                feedback != null -> "${feedback.savedCount} page${if (feedback.savedCount == 1) "" else "s"} saved"
+                else -> ""
+            }
+            Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Ink)
+
+            // Subtitle
+            val sub = when {
+                isProcessing -> null
+                feedback?.mismatchCount != null && feedback.mismatchCount > 0 ->
+                    "· ${feedback.destinationLabel}, ${feedback.mismatchCount} suggestions"
+                feedback != null -> "· ${feedback.destinationLabel}"
+                else -> null
+            }
+            sub?.let {
+                Text(it, fontSize = 12.sp, color = InkDim)
+            }
         }
     }
 }

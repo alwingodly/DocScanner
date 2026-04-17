@@ -8,6 +8,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +40,7 @@ import com.example.docscanner.presentation.alldocuments.InkDim
 import com.example.docscanner.presentation.alldocuments.InkMid
 import com.example.docscanner.presentation.alldocuments.StrokeLight
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MainLayout(
     isSelectMode   : Boolean             = false,
@@ -62,7 +64,7 @@ fun MainLayout(
         Spacer(
             Modifier
                 .fillMaxWidth()
-                .windowInsetsTopHeight(WindowInsets.statusBars)
+                .windowInsetsTopHeight(WindowInsets.statusBarsIgnoringVisibility)
                 .background(BgCard)
         )
 

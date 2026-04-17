@@ -121,5 +121,58 @@ interface DocumentDao {
 """)
     suspend fun getGlobalAadhaarDocs(): List<DocumentEntity>
 
+    // ── Passport pairing ──────────────────────────────────────────────────────
+
+    @Query("UPDATE documents SET passportGroupId = :groupId, passportSide = :side, passportHolderName = :holderName WHERE id = :docId")
+    suspend fun updatePassportGroup(docId: String, side: String?, groupId: String?, holderName: String?)
+
+    @Query("UPDATE documents SET passportGroupId = :groupId WHERE id = :docId")
+    suspend fun updatePassportGroupIdOnly(docId: String, groupId: String)
+
+    @Query("""
+        SELECT * FROM documents
+        WHERE sessionId = :sessionId
+        AND docClassLabel = 'Passport'
+        AND passportGroupId IS NOT NULL
+        AND isMergedSource = 0
+    """)
+    suspend fun getExistingPassportDocs(sessionId: String): List<DocumentEntity>
+
+    @Query("""
+        SELECT * FROM documents
+        WHERE sessionId IS NULL
+        AND docClassLabel = 'Passport'
+        AND passportGroupId IS NOT NULL
+        AND isMergedSource = 0
+    """)
+    suspend fun getGlobalPassportDocs(): List<DocumentEntity>
+
+    /** Find any passport doc (across all sessions) that shares the same hashed number. */
+    @Query("""
+        SELECT * FROM documents
+        WHERE passportNumHash = :hash
+        AND isMergedSource = 0
+    """)
+    suspend fun getPassportDocsByHash(hash: String): List<DocumentEntity>
+
+    /** All passport docs in session that don't yet belong to any group (unpaired). */
+    @Query("""
+        SELECT * FROM documents
+        WHERE docClassLabel = 'Passport'
+        AND passportGroupId IS NULL
+        AND isMergedSource = 0
+        AND sessionId = :sessionId
+    """)
+    suspend fun getUnpairedPassportDocs(sessionId: String): List<DocumentEntity>
+
+    /** All global (no-session) passport docs that don't yet belong to any group. */
+    @Query("""
+        SELECT * FROM documents
+        WHERE docClassLabel = 'Passport'
+        AND passportGroupId IS NULL
+        AND sessionId IS NULL
+        AND isMergedSource = 0
+    """)
+    suspend fun getUnpairedGlobalPassportDocs(): List<DocumentEntity>
 
 }

@@ -18,16 +18,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Coral primary color (#E8603C) as status bar background with light (white) icons
-        val coralArgb = android.graphics.Color.parseColor("#E8603C")
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(coralArgb),
-            navigationBarStyle = SystemBarStyle.light(
-                android.graphics.Color.parseColor("#FAF8F5"),
-                android.graphics.Color.parseColor("#FAF8F5")
-            )
-        )
+        applySystemBars()
 
         setContent {
             DocScannerTheme {
@@ -36,5 +27,23 @@ class MainActivity : ComponentActivity() {
                 DocScannerNavHost(startDestination = startDestination)   // ← pass down
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applySystemBars()
+    }
+
+    private fun applySystemBars() {
+        // Re-apply after returning from the external scanner, which can temporarily
+        // change system UI visibility and leave top insets in a bad state.
+        val coralArgb = android.graphics.Color.parseColor("#E8603C")
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(coralArgb),
+            navigationBarStyle = SystemBarStyle.light(
+                android.graphics.Color.parseColor("#FAF8F5"),
+                android.graphics.Color.parseColor("#FAF8F5")
+            )
+        )
     }
 }

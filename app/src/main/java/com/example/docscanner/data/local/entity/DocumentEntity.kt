@@ -25,4 +25,11 @@ data class DocumentEntity(
     val aadhaarGender: String? = null,
     val aadhaarMaskedNumber: String? = null,
     val aadhaarAddress: String? = null,
+    val extractedDetailsJson: String? = null,
+    val ocrRawText: String? = null,
+    // ── Passport pairing ──────────────────────────────────────────────────────
+    val passportGroupId: String? = null,
+    val passportSide: String? = null,        // "FRONT" (data page) | "BACK" (address page)
+    val passportHolderName: String? = null,  // holder name for display in group tile
+    val passportNumHash: String? = null,     // SHA-256(passportNumber) for cross-session matching
 )

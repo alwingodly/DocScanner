@@ -1,12 +1,17 @@
 package com.example.docscanner.navigation
 
 import android.annotation.SuppressLint
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.*
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.docscanner.domain.model.Document
@@ -14,6 +19,7 @@ import com.example.docscanner.domain.model.AadhaarGroup
 import com.example.docscanner.presentation.alldocuments.AllDocumentsScreen
 import com.example.docscanner.presentation.alldocuments.AllDocumentsViewModel
 import com.example.docscanner.presentation.alldocuments.DocumentTab
+import com.example.docscanner.presentation.alldocuments.EditDetailsScreen
 import com.example.docscanner.presentation.alldocuments.GroupDetailScreen
 import com.example.docscanner.presentation.apphome.AppHomeScreen
 import com.example.docscanner.presentation.apphome.SessionContextViewModel
@@ -26,6 +32,14 @@ import com.example.docscanner.presentation.profile.ProfileScreen
 import com.example.docscanner.presentation.shared.ScannerViewModel
 import com.example.docscanner.presentation.viewer.DocumentType
 import com.example.docscanner.presentation.viewer.DocumentViewerScreen
+import androidx.compose.runtime.collectAsState
+
+// ── Transition helpers ────────────────────────────────────────────────────
+
+private val enterFromRight = slideInHorizontally(initialOffsetX = { it }) + fadeIn()
+private val exitToLeft     = slideOutHorizontally(targetOffsetX = { -it / 3 }) + fadeOut()
+private val enterFromLeft  = slideInHorizontally(initialOffsetX = { -it / 3 }) + fadeIn()
+private val exitToRight    = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
 
 sealed class Screen(val route: String) {
     data object Login : Screen("login")
@@ -41,6 +55,9 @@ sealed class Screen(val route: String) {
     data object GroupDetail : Screen("group_detail/{groupId}") {
         fun createRoute(groupId: String) = "group_detail/${groupId.enc()}"
     }
+    data object EditDetails : Screen("edit_details/{docId}") {
+        fun createRoute(docId: String) = "edit_details/${docId.enc()}"
+    }
 }
 
 private fun String.enc() = java.net.URLEncoder.encode(this, "UTF-8")
@@ -51,35 +68,47 @@ fun DocScannerNavHost(
     navController: NavHostController = rememberNavController(),
     startDestination: String = Screen.Login.route
 ) {
-    val scannerViewModel: ScannerViewModel = hiltViewModel()
-    val allDocsViewModel: AllDocumentsViewModel = hiltViewModel()
-    val mergeViewModel: MergeViewModel = hiltViewModel()
-    val sessionContext: SessionContextViewModel = hiltViewModel()
+    val scannerViewModel: ScannerViewModel          = hiltViewModel()
+    val allDocsViewModel: AllDocumentsViewModel     = hiltViewModel()
+    val mergeViewModel  : MergeViewModel            = hiltViewModel()
+    val sessionContext  : SessionContextViewModel   = hiltViewModel()
 
-    val state by scannerViewModel.state.collectAsState()
-    val mergeState by mergeViewModel.state.collectAsState()
+    val state        by scannerViewModel.state.collectAsState()
+    val mergeState   by mergeViewModel.state.collectAsState()
+    val navBackStack by navController.currentBackStackEntryAsState()
+    val currentRoute  = navBackStack?.destination?.route
 
-    var viewingDocument by remember { mutableStateOf<Document?>(null) }
-    var viewerDocuments by remember { mutableStateOf<List<Document>>(emptyList()) }
-    var viewerInitialIndex by remember { mutableIntStateOf(0) }
-    var isSelectMode by remember { mutableStateOf(false) }
-    var selectedCount by remember { mutableIntStateOf(0) }
-    var docCount by remember { mutableIntStateOf(0) }
+    // ── Viewer anchor: only the IDs are stored; live docs come from the VM ──
+    var viewingDocumentId   by remember { mutableStateOf<String?>(null) }
+    var viewerDocumentIds   by remember { mutableStateOf<List<String>>(emptyList()) }
+    var viewerInitialIndex  by remember { mutableIntStateOf(0) }
+
+    var isSelectMode    by remember { mutableStateOf(false) }
+    var selectedCount   by remember { mutableIntStateOf(0) }
+    var docCount        by remember { mutableIntStateOf(0) }
     var selectAllTrigger by remember { mutableIntStateOf(0) }
-    var columnCount by remember { mutableIntStateOf(3) }
-    var selectedTab by remember { mutableStateOf(DocumentTab.ALL) }
+    var columnCount     by remember { mutableIntStateOf(3) }
+    var selectedTab     by remember { mutableStateOf(DocumentTab.ALL) }
 
     fun toggleSelect() {
         isSelectMode = !isSelectMode
         if (!isSelectMode) selectAllTrigger = 0
     }
 
-    LaunchedEffect(state.saveSuccess) {
+    LaunchedEffect(state.isSaving, currentRoute) {
+        if (state.isSaving && currentRoute == Screen.Camera.route) {
+            navController.popBackStack(Screen.AllDocuments.route, inclusive = false)
+        }
+    }
+
+    LaunchedEffect(state.saveSuccess, currentRoute) {
         if (state.saveSuccess) {
             scannerViewModel.onSaveNavigated()
-            navController.popBackStack(Screen.AllDocuments.route, inclusive = false)
+            if (currentRoute != Screen.AllDocuments.route) {
+                navController.popBackStack(Screen.AllDocuments.route, inclusive = false)
+            }
             if (state.pendingMismatches.isEmpty()) {
-                scannerViewModel.onReset(keepTarget = false)
+                scannerViewModel.onReset(keepTarget = false, keepFeedback = true)
             }
         }
     }
@@ -93,16 +122,26 @@ fun DocScannerNavHost(
 
     fun navigateToViewer(doc: Document, docs: List<Document> = listOf(doc)) {
         val type = if (doc.pdfPath != null) DocumentType.PDF else DocumentType.IMAGE
-        val uri = doc.pdfPath ?: doc.thumbnailPath ?: return
-        viewingDocument = doc
-        viewerDocuments = docs
+        val uri  = doc.pdfPath ?: doc.thumbnailPath ?: return
+        viewingDocumentId  = doc.id
+        viewerDocumentIds  = docs.map { it.id }
         viewerInitialIndex = docs.indexOfFirst { it.id == doc.id }.takeIf { it >= 0 } ?: 0
         navController.navigate(Screen.Viewer.createRoute(doc.name, type, uri))
     }
 
-    NavHost(navController = navController, startDestination = startDestination) {
+    NavHost(
+        navController    = navController,
+        startDestination = startDestination
+    ) {
 
-        composable(Screen.Login.route) {
+        // ── Login ──────────────────────────────────────────────────────────
+        composable(
+            route            = Screen.Login.route,
+            enterTransition  = { enterFromRight },
+            exitTransition   = { exitToLeft },
+            popEnterTransition  = { enterFromLeft },
+            popExitTransition   = { exitToRight }
+        ) {
             LoginScreen(onLoginSuccess = {
                 navController.navigate(Screen.AppHome.route) {
                     popUpTo(Screen.Login.route) { inclusive = true }
@@ -110,11 +149,18 @@ fun DocScannerNavHost(
             })
         }
 
-        composable(Screen.AppHome.route) {
+        // ── AppHome ────────────────────────────────────────────────────────
+        composable(
+            route            = Screen.AppHome.route,
+            enterTransition  = { enterFromRight },
+            exitTransition   = { exitToLeft },
+            popEnterTransition  = { enterFromLeft },
+            popExitTransition   = { exitToRight }
+        ) {
             AppHomeScreen(
                 onSessionClick = { session ->
                     sessionContext.setActiveSession(
-                        sessionId = session.id,
+                        sessionId       = session.id,
                         applicationType = session.applicationType
                     )
                     allDocsViewModel.setSessionId(session.id)
@@ -125,9 +171,16 @@ fun DocScannerNavHost(
             )
         }
 
-        composable(Screen.Profile.route) {
+        // ── Profile ────────────────────────────────────────────────────────
+        composable(
+            route            = Screen.Profile.route,
+            enterTransition  = { enterFromRight },
+            exitTransition   = { exitToLeft },
+            popEnterTransition  = { enterFromLeft },
+            popExitTransition   = { exitToRight }
+        ) {
             ProfileScreen(
-                onBack = { navController.popBackStack() },
+                onBack   = { navController.popBackStack() },
                 onLogout = {
                     sessionContext.clearActiveSession()
                     allDocsViewModel.setSessionId(null)
@@ -137,85 +190,95 @@ fun DocScannerNavHost(
             )
         }
 
-        composable(Screen.AllDocuments.route) {
+        // ── AllDocuments ───────────────────────────────────────────────────
+        composable(
+            route            = Screen.AllDocuments.route,
+            enterTransition  = { enterFromRight },
+            exitTransition   = { exitToLeft },
+            popEnterTransition  = { enterFromLeft },
+            popExitTransition   = { exitToRight }
+        ) {
             MainLayout(
-                isSelectMode = isSelectMode,
+                isSelectMode  = isSelectMode,
                 selectedCount = selectedCount,
                 documentCount = docCount,
-                hasDocuments = docCount > 0,
-                columnCount = columnCount,
-                selectedTab = selectedTab,
-                onTabChange = { tab ->
+                hasDocuments  = docCount > 0,
+                columnCount   = columnCount,
+                selectedTab   = selectedTab,
+                onTabChange   = { tab ->
                     if (isSelectMode) isSelectMode = false
                     selectedTab = tab
                 },
                 onSelectToggle = ::toggleSelect,
-                onSelectAll = { selectAllTrigger++ },
+                onSelectAll    = { selectAllTrigger++ },
                 onColumnChange = { columnCount = it }
             ) {
                 AllDocumentsScreen(
-                    isSelectMode = isSelectMode,
-                    selectAllTrigger = selectAllTrigger,
-                    onSelectToggle = ::toggleSelect,
-                    onEnterSelectMode = { isSelectMode = true },
-                    onDocumentClick = { navigateToViewer(it) },
-                    onScanClick = {
-                        scannerViewModel.onReset(keepTarget = false)
-                        navController.navigate(Screen.Camera.route)
+                    isSelectMode          = isSelectMode,
+                    selectAllTrigger      = selectAllTrigger,
+                    onSelectToggle        = ::toggleSelect,
+                    onEnterSelectMode     = { isSelectMode = true },
+                    onDocumentClick       = { navigateToViewer(it) },
+                    onScanClick           = {
+                        if (!state.isSaving) {
+                            scannerViewModel.onReset(keepTarget = false)
+                            navController.navigate(Screen.Camera.route)
+                        }
                     },
-                    onScanToFolder = { folder ->
-                        scannerViewModel.onReset(keepTarget = false)
-                        scannerViewModel.setTargetFolder(
-                            folderId   = folder.id,
-                            folderName = folder.name,
-                            exportType = folder.exportType,
-                            docType    = folder.docType
-                        )
-                        navController.navigate(Screen.Camera.route)
+                    onScanToFolder        = { folder ->
+                        if (!state.isSaving) {
+                            scannerViewModel.onReset(keepTarget = false)
+                            scannerViewModel.setTargetFolder(
+                                folderId   = folder.id,
+                                folderName = folder.name,
+                                exportType = folder.exportType,
+                                docType    = folder.docType
+                            )
+                            navController.navigate(Screen.Camera.route)
+                        }
                     },
-                    columnCount = columnCount,
-                    showUnclassifiedOnly = selectedTab == DocumentTab.UNCLASSIFIED,
-                    onMergeSelected = { selectedDocs ->
+                    columnCount           = columnCount,
+                    showUnclassifiedOnly  = selectedTab == DocumentTab.UNCLASSIFIED,
+                    onMergeSelected       = { selectedDocs ->
                         mergeViewModel.loadDocuments(selectedDocs, "")
                         navController.navigate(Screen.Reorder.route)
                     },
-                    onSelectedCountChanged = { selectedCount = it },
-                    onDocumentCountChanged = { docCount = it },
-                    // ── Mismatch resolution ───────────────────────────────────
-                    pendingMismatches = state.pendingMismatches,
-                    onResolveMismatch = { docId, chosenLabel ->
-                        // Find the saved doc by id and update its label
-                        // changeDocumentType also triggers masking if label is Aadhaar/PAN
+                    onSelectedCountChanged  = { selectedCount = it },
+                    onDocumentCountChanged  = { docCount = it },
+                    pendingMismatches       = state.pendingMismatches,
+                    onResolveMismatch       = { docId, chosenLabel ->
                         val doc = allDocsViewModel.documents.value.firstOrNull { it.id == docId }
-                        if (doc != null) {
-                            allDocsViewModel.changeDocumentType(doc, chosenLabel)
-                        }
+                        if (doc != null) allDocsViewModel.changeDocumentType(doc, chosenLabel)
                     },
-                    onDismissMismatches = {
+                    onDismissMismatches     = {
                         scannerViewModel.dismissMismatches()
                         scannerViewModel.onReset()
-                        // Do NOT clear Aadhaar group here either
                     },
-                    viewModel = allDocsViewModel,
-                    onGroupTap = { groupId ->
+                    isScanProcessing        = state.isSaving,
+                    scanFeedback            = state.saveFeedback,
+                    onScanFeedbackShown     = { scannerViewModel.clearSaveFeedback() },
+                    viewModel               = allDocsViewModel,
+                    onGroupTap              = { groupId ->
                         navController.navigate(Screen.GroupDetail.createRoute(groupId))
                     }
                 )
             }
         }
 
-        composable(Screen.Camera.route) {
+        // ── Camera ─────────────────────────────────────────────────────────
+        composable(
+            route            = Screen.Camera.route,
+            enterTransition  = { enterFromRight },
+            exitTransition   = { exitToLeft },
+            popEnterTransition  = { enterFromLeft },
+            popExitTransition   = { exitToRight }
+        ) {
             CameraPermissionHandler {
                 CameraScreen(
-                    pageCount          = state.pages.size,
-                    lastCapturedBitmap = state.pages.lastOrNull()?.displayBitmap,
-                    isSaving           = state.isSaving,
-                    onPhotoCaptured    = { bmp, corners -> scannerViewModel.onPhotoCaptured(bmp, corners) },
-                    onDone             = { scannerViewModel.onAutoSavePages() },
-                    onBack = {
-                        if (state.pages.isNotEmpty()) {
-                            scannerViewModel.clearAadhaarGroup()
-                        }
+                    isSaving       = state.isSaving,
+                    onImportPages  = { uris -> scannerViewModel.onImportedPages(uris) },
+                    onBack         = {
+                        if (state.pages.isNotEmpty()) scannerViewModel.clearAadhaarGroup()
                         scannerViewModel.onReset(keepTarget = false)
                         navController.popBackStack()
                     }
@@ -223,73 +286,133 @@ fun DocScannerNavHost(
             }
         }
 
-        composable(Screen.Reorder.route) {
+        // ── Reorder ────────────────────────────────────────────────────────
+        composable(
+            route            = Screen.Reorder.route,
+            enterTransition  = { enterFromRight },
+            exitTransition   = { exitToLeft },
+            popEnterTransition  = { enterFromLeft },
+            popExitTransition   = { exitToRight }
+        ) {
             ReorderScreen(
-                state = mergeState,
-                onReorder = { from, to -> mergeViewModel.onReorder(from, to) },
+                state        = mergeState,
+                onReorder    = { from, to -> mergeViewModel.onReorder(from, to) },
                 onRemoveItem = { idx -> mergeViewModel.onRemoveItem(idx) },
-                onMerge = { mergeViewModel.onMerge() },
-                onBack = { navController.popBackStack() }
+                onMerge      = { mergeViewModel.onMerge() },
+                onBack       = { navController.popBackStack() }
             )
         }
 
+        // ── GroupDetail ────────────────────────────────────────────────────
         composable(
-            route     = Screen.GroupDetail.route,
-            arguments = listOf(navArgument("groupId") { type = NavType.StringType })
+            route            = Screen.GroupDetail.route,
+            arguments        = listOf(navArgument("groupId") { type = NavType.StringType }),
+            enterTransition  = { enterFromRight },
+            exitTransition   = { exitToLeft },
+            popEnterTransition  = { enterFromLeft },
+            popExitTransition   = { exitToRight }
         ) { back ->
             val groupId = back.arguments?.getString("groupId")
                 ?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: ""
             GroupDetailScreen(
-                groupId    = groupId,
-                onBack     = { navController.popBackStack() },
-                onDocClick = { doc, docs -> navigateToViewer(doc, docs) },
-                viewModel  = allDocsViewModel
+                groupId      = groupId,
+                onBack       = { navController.popBackStack() },
+                onDocClick   = { doc, docs -> navigateToViewer(doc, docs) },
+                onEditDetails = { doc ->
+                    navController.navigate(Screen.EditDetails.createRoute(doc.id))
+                },
+                viewModel    = allDocsViewModel
             )
         }
 
+        // ── EditDetails ────────────────────────────────────────────────────
         composable(
-            route = Screen.Viewer.route,
+            route            = Screen.EditDetails.route,
+            arguments        = listOf(navArgument("docId") { type = NavType.StringType }),
+            enterTransition  = { enterFromRight },
+            exitTransition   = { exitToLeft },
+            popEnterTransition  = { enterFromLeft },
+            popExitTransition   = { exitToRight }
+        ) { back ->
+            val docId = back.arguments?.getString("docId")
+                ?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: ""
+
+            // Collect live so edits from this screen reflect immediately on pop
+            val allDocs by allDocsViewModel.documents.collectAsState()
+            val doc = allDocs.firstOrNull { it.id == docId }
+
+            if (doc != null) {
+                EditDetailsScreen(
+                    document = doc,
+                    onSave   = { details -> allDocsViewModel.updateDocumentExtractedDetails(doc, details) },
+                    onBack   = { navController.popBackStack() }
+                )
+            }
+        }
+
+        // ── Viewer ─────────────────────────────────────────────────────────
+        composable(
+            route     = Screen.Viewer.route,
             arguments = listOf(
                 navArgument("docName") { type = NavType.StringType },
                 navArgument("docType") { type = NavType.StringType },
-                navArgument("docUri") { type = NavType.StringType }
-            )
+                navArgument("docUri")  { type = NavType.StringType }
+            ),
+            enterTransition  = { enterFromRight },
+            exitTransition   = { exitToLeft },
+            popEnterTransition  = { enterFromLeft },
+            popExitTransition   = { exitToRight }
         ) { back ->
             val name = back.arguments?.getString("docName") ?: ""
             val type = back.arguments?.getString("docType")
                 ?.let { DocumentType.valueOf(it) } ?: DocumentType.IMAGE
-            val uri = back.arguments?.getString("docUri")
+            val uri  = back.arguments?.getString("docUri")
                 ?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: ""
 
+            // ── Live derivation: re-look up docs from the VM on every recompose ──
+            val allDocs by allDocsViewModel.documents.collectAsState()
+
+            val liveDoc = remember(allDocs, viewingDocumentId) {
+                allDocs.firstOrNull { it.id == viewingDocumentId }
+            }
+            val liveDocs = remember(allDocs, viewerDocumentIds) {
+                val byId = allDocs.associateBy { it.id }
+                viewerDocumentIds.mapNotNull { byId[it] }
+                    .ifEmpty { listOfNotNull(liveDoc) }
+            }
+
             DocumentViewerScreen(
-                documentName = name,
-                documentUri = uri,
-                documentType = type,
-                document = viewingDocument,
-                documents = viewerDocuments,
-                initialIndex = viewerInitialIndex,
-                allFolders = allDocsViewModel.allFolders.collectAsState().value,
-                onBack = { navController.popBackStack() },
-                onRename = { doc, newName ->
+                documentName         = name,
+                documentUri          = uri,
+                documentType         = type,
+                document             = liveDoc,
+                documents            = liveDocs,
+                initialIndex         = viewerInitialIndex,
+                allFolders           = allDocsViewModel.allFolders.collectAsState().value,
+                onBack               = { navController.popBackStack() },
+                onRename             = { doc, newName ->
                     allDocsViewModel.renameDocument(doc, newName)
                     navController.popBackStack()
                 },
-                onChangeType = { doc, label ->
+                onChangeType         = { doc, label ->
                     allDocsViewModel.changeDocumentType(doc, label)
                     navController.popBackStack()
                 },
-                onDelete = { doc ->
+                onDelete             = { doc ->
                     allDocsViewModel.deleteDocument(doc)
                     navController.popBackStack()
                 },
-                onUnmerge = { doc ->
+                onUnmerge            = { doc ->
                     if (doc.isMergedPdf) {
                         mergeViewModel.unmerge(doc)
                         navController.popBackStack()
                     }
                 },
-                onRenameAadhaarPair = { doc, newName ->
-                    val group = allDocsViewModel.aadhaarGroups.value
+                onEditDetails        = { doc ->
+                    navController.navigate(Screen.EditDetails.createRoute(doc.id))
+                },
+                onRenameAadhaarPair  = { doc, newName ->
+                    val group     = allDocsViewModel.aadhaarGroups.value
                         .firstOrNull { it.groupId == doc.aadhaarGroupId }
                     val sanitized = newName.trim().replace(" ", "_")
                     group?.frontDoc?.let {

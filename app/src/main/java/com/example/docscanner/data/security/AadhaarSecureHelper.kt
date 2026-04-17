@@ -1,11 +1,13 @@
 package com.example.docscanner.data.security
 
 import android.content.Context
+import android.util.Base64
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -23,8 +25,8 @@ class AadhaarSecureHelper @Inject constructor(
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val GCM_TAG_LEN   = 128
 
-        // Fixed per-app salt — change this string when you first ship
-        private const val SALT = "docscanner_aadhaar_v1"
+        private const val SALT_PREF_FILE = "aadhaar_security"
+        private const val SALT_PREF_KEY  = "install_salt_b64"
     }
 
     // ── Hashing (for group IDs) ───────────────────────────────────────────────
@@ -34,14 +36,14 @@ class AadhaarSecureHelper @Inject constructor(
         require(digits12.length == 12 && digits12.all { it.isDigit() }) {
             "Expected 12-digit Aadhaar number"
         }
-        val input = "$SALT:$digits12".toByteArray(Charsets.UTF_8)
+        val input = "${getOrCreateInstallSalt()}:$digits12".toByteArray(Charsets.UTF_8)
         val hash  = MessageDigest.getInstance("SHA-256").digest(input)
         return hash.joinToString("") { "%02x".format(it) }.take(24) // 96-bit prefix is plenty
     }
 
     fun hashLast4(digits12: String): String {
         val last4 = digits12.takeLast(4)
-        val input = "$SALT:last4:$last4".toByteArray(Charsets.UTF_8)
+        val input = "${getOrCreateInstallSalt()}:last4:$last4".toByteArray(Charsets.UTF_8)
         val hash  = MessageDigest.getInstance("SHA-256").digest(input)
         return hash.joinToString("") { "%02x".format(it) }.take(16)
     }
@@ -84,5 +86,17 @@ class AadhaarSecureHelper @Inject constructor(
                 .build()
         )
         return keyGen.generateKey()
+    }
+
+    private fun getOrCreateInstallSalt(): String {
+        val prefs = context.getSharedPreferences(SALT_PREF_FILE, Context.MODE_PRIVATE)
+        val existing = prefs.getString(SALT_PREF_KEY, null)
+        if (!existing.isNullOrBlank()) return existing
+
+        val saltBytes = ByteArray(32)
+        SecureRandom().nextBytes(saltBytes)
+        val generated = Base64.encodeToString(saltBytes, Base64.NO_WRAP)
+        prefs.edit().putString(SALT_PREF_KEY, generated).apply()
+        return generated
     }
 }

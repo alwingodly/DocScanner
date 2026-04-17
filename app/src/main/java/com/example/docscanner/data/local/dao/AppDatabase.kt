@@ -18,7 +18,7 @@ import com.example.docscanner.data.local.entity.FolderEntity
         ApplicationDocumentEntity::class,
         DocGroupEntity::class           // ← new
     ],
-    version = 14,
+    version = 17,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -106,6 +106,27 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarGender TEXT")
                 db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarMaskedNumber TEXT")
                 db.execSQL("ALTER TABLE documents ADD COLUMN aadhaarAddress TEXT")
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE documents ADD COLUMN extractedDetailsJson TEXT")
+                db.execSQL("ALTER TABLE documents ADD COLUMN ocrRawText TEXT")
+            }
+        }
+
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE documents ADD COLUMN passportGroupId TEXT")
+                db.execSQL("ALTER TABLE documents ADD COLUMN passportSide TEXT")
+                db.execSQL("ALTER TABLE documents ADD COLUMN passportHolderName TEXT")
+            }
+        }
+
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE documents ADD COLUMN passportNumHash TEXT")
             }
         }
 

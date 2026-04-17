@@ -2,6 +2,9 @@ package com.example.docscanner.domain.model
 
 import android.graphics.Bitmap
 import android.graphics.PointF
+import org.json.JSONArray
+import org.json.JSONObject
+
 enum class DocClassType(val displayName: String) {
     AADHAAR_FRONT("Aadhaar Front"),
     AADHAAR_BACK("Aadhaar Back"),
@@ -76,6 +79,12 @@ data class Folder(
     val docType: String = "Other"   // ← new
 )
 
+data class DocumentDetail(
+    val label: String,
+    val value: String,
+    val multiline: Boolean = false
+)
+
 data class Document(
     val id: String = System.currentTimeMillis().toString(),
     val folderId: String,
@@ -96,8 +105,64 @@ data class Document(
     val aadhaarGender: String? = null,
     val aadhaarMaskedNumber: String? = null,
     val aadhaarAddress: String? = null,
+    val extractedDetailsJson: String? = null,
+    val ocrRawText: String? = null,
+    val passportGroupId: String? = null,
+    val passportSide: String? = null,
+    val passportHolderName: String? = null,
+    val passportNumHash: String? = null,
 ) {
     val isMergedPdf: Boolean get() = !mergedFromDocumentIds.isNullOrEmpty()
     val sourceDocumentIds: List<String>
         get() = mergedFromDocumentIds?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
+    val extractedDetails: List<DocumentDetail>
+        get() = parseDocumentDetails(extractedDetailsJson)
+}
+
+fun parseDocumentDetails(json: String?): List<DocumentDetail> {
+    if (json.isNullOrBlank()) return emptyList()
+
+    return runCatching {
+        val array = JSONArray(json)
+        buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val label = item.optString("label").trim()
+                val value = item.optString("value").trim()
+                if (label.isNotEmpty() && value.isNotEmpty()) {
+                    add(
+                        DocumentDetail(
+                            label = label,
+                            value = value,
+                            multiline = item.optBoolean("multiline", false)
+                        )
+                    )
+                }
+            }
+        }
+    }.getOrDefault(emptyList())
+}
+
+fun List<DocumentDetail>.toDocumentDetailsJson(): String? {
+    val normalized = this
+        .mapNotNull { detail ->
+            val label = detail.label.trim()
+            val value = detail.value.trim()
+            if (label.isEmpty() || value.isEmpty()) null
+            else detail.copy(label = label, value = value)
+        }
+
+    if (normalized.isEmpty()) return null
+
+    return JSONArray().apply {
+        normalized.forEach { detail ->
+            put(
+                JSONObject().apply {
+                    put("label", detail.label)
+                    put("value", detail.value)
+                    put("multiline", detail.multiline)
+                }
+            )
+        }
+    }.toString()
 }

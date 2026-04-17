@@ -11,9 +11,11 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,8 +23,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -73,8 +76,12 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.example.docscanner.domain.model.AadhaarGroup
 import com.example.docscanner.domain.model.Document
+import com.example.docscanner.domain.model.DocumentDetail
+import com.example.docscanner.domain.model.PassportGroup
 
 private fun Document.groupBadgeLabel(): String = when {
+    passportSide == "FRONT"                                    -> "Data Page"
+    passportSide == "BACK"                                     -> "Back Page"
     aadhaarSide == "FRONT" || docClassLabel == "Aadhaar Front" -> "Front"
     aadhaarSide == "BACK"  || docClassLabel == "Aadhaar Back"  -> "Back"
     else -> docClassLabel ?: "Other"
@@ -88,29 +95,36 @@ private val AadhaarGreen  = Color(0xFF16A34A)
 // GROUP DETAIL SCREEN
 // ═══════════════════════════════════════════════════════════════════════════
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun GroupDetailScreen(
     groupId   : String,
     onBack    : () -> Unit,
     onDocClick: (Document, List<Document>) -> Unit,
+    onEditDetails: (Document) -> Unit,
     viewModel : AllDocumentsViewModel = hiltViewModel()
 ) {
-    val allDocs       by viewModel.documents.collectAsState()
-    val aadhaarGroups by viewModel.aadhaarGroups.collectAsState()
-    val docGroupNames by viewModel.docGroupNames.collectAsState()
+    val allDocs        by viewModel.documents.collectAsState()
+    val aadhaarGroups  by viewModel.aadhaarGroups.collectAsState()
+    val passportGroups by viewModel.passportGroups.collectAsState()
+    val docGroupNames  by viewModel.docGroupNames.collectAsState()
     val context = LocalContext.current
 
     val aadhaarGroup = remember(aadhaarGroups, groupId) {
         aadhaarGroups.firstOrNull { it.groupId == groupId }
     }
-    val isAadhaarGroup = aadhaarGroup != null
+    val passportGroup = remember(passportGroups, groupId) {
+        passportGroups.firstOrNull { it.groupId == groupId }
+    }
+    val isAadhaarGroup  = aadhaarGroup  != null
+    val isPassportGroup = passportGroup != null
 
-    val rawDocs = remember(allDocs, groupId, aadhaarGroup) {
-        if (aadhaarGroup != null)
-            listOfNotNull(aadhaarGroup.frontDoc, aadhaarGroup.backDoc)
-        else
-            allDocs.filter { it.docGroupId == groupId }.sortedByDescending { it.createdAt }
+    val rawDocs = remember(allDocs, groupId, aadhaarGroup, passportGroup) {
+        when {
+            aadhaarGroup  != null -> listOfNotNull(aadhaarGroup.frontDoc, aadhaarGroup.backDoc)
+            passportGroup != null -> listOfNotNull(passportGroup.frontDoc, passportGroup.backDoc)
+            else -> allDocs.filter { it.docGroupId == groupId }.sortedByDescending { it.createdAt }
+        }
     }
 
     val sectionOrder by viewModel.sectionDocOrder.collectAsState()
@@ -124,25 +138,36 @@ fun GroupDetailScreen(
         ordered + remaining
     }
 
-    val groupDisplayName = remember(docGroupNames, groupId, aadhaarGroup) {
-        aadhaarGroup?.displayName ?: docGroupNames[groupId] ?: "Group"
+    val groupDisplayName = remember(docGroupNames, groupId, aadhaarGroup, passportGroup) {
+        aadhaarGroup?.displayName ?: passportGroup?.displayName ?: docGroupNames[groupId] ?: "Group"
     }
 
     // ── Dialogs / sheets state ─────────────────────────────────────────────
-    var contextDoc          by remember { mutableStateOf<Document?>(null) }
-    var actionDoc           by remember { mutableStateOf<Document?>(null) }
-    var showRenameDocDialog by remember { mutableStateOf(false) }
-    var renameDocText       by remember { mutableStateOf("") }
-    var showDeleteDocDialog by remember { mutableStateOf(false) }
+    var contextDoc           by remember { mutableStateOf<Document?>(null) }
+    var actionDoc            by remember { mutableStateOf<Document?>(null) }
+    var showRenameDocDialog  by remember { mutableStateOf(false) }
+    var renameDocText        by remember { mutableStateOf("") }
+    var showDeleteDocDialog  by remember { mutableStateOf(false) }
     var showRenamePairDialog by remember { mutableStateOf(false) }
-    var pairRenameText      by remember { mutableStateOf("") }
-    val sheetState          = rememberModalBottomSheetState()
+    var editableDetailsDoc   by remember { mutableStateOf<Document?>(null) }
+    var editableDetails      by remember { mutableStateOf<List<DocumentDetail>>(emptyList()) }
+    var pairRenameText       by remember { mutableStateOf("") }
+    val sheetState           = rememberModalBottomSheetState()
 
     // ── Drag state (regular groups) ────────────────────────────────────────
-    val cardPos   = remember { HashMap<Int, CardPos>() }
-    var dragState by remember { mutableStateOf(DragState()) }
+    val cardPos     = remember { HashMap<Int, CardPos>() }
+    var dragState   by remember { mutableStateOf(DragState()) }
     val columnCount = 3
     val gap         = 4.dp
+    val docsWithDetails = remember(docs) {
+        docs.filter { it.groupDetailRows().isNotEmpty() }
+    }
+
+    fun openDetailsEditor(doc: Document) {
+        editableDetailsDoc = doc
+        editableDetails = doc.groupDetailRows()
+            .ifEmpty { listOf(DocumentDetail("Name", "")) }
+    }
 
     // ── Layout ────────────────────────────────────────────────────────────
     Column(
@@ -151,78 +176,78 @@ fun GroupDetailScreen(
             .background(BgBase)
     ) {
         // Status bar spacer
-        Spacer(Modifier.fillMaxWidth().statusBarsPadding().background(BgCard))
+        Spacer(
+            Modifier
+                .fillMaxWidth()
+                .windowInsetsTopHeight(WindowInsets.statusBarsIgnoringVisibility)
+                .background(BgCard)
+        )
 
         // ── Top bar ───────────────────────────────────────────────────────
         Box(Modifier.fillMaxWidth().background(BgCard)) {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                    .padding(start = 4.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.Default.ArrowBack, null, tint = Ink, modifier = Modifier.size(22.dp))
-                }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        groupDisplayName,
-                        color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    Icon(
+                        Icons.Default.ArrowBack, null,
+                        tint = Ink, modifier = Modifier.size(22.dp)
                     )
-                    if (isAadhaarGroup) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            val statusColor = if (aadhaarGroup?.isComplete == true) AadhaarGreen else Color(0xFFD97706)
-                            val statusLabel = if (aadhaarGroup?.isComplete == true) "Pair complete" else "1 side missing"
-                            Box(
-                                Modifier
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(statusColor.copy(alpha = 0.10f))
-                                    .border(1.dp, statusColor.copy(alpha = 0.18f), RoundedCornerShape(999.dp))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Text(
-                                    statusLabel,
-                                    color = statusColor,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                            Text(
-                                "${docs.size} page${if (docs.size == 1) "" else "s"}",
-                                color = InkDim,
-                                fontSize = 11.sp
-                            )
+                }
+                // Tappable title area — tap anywhere on the title/subtitle to rename
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            pairRenameText = if (isAadhaarGroup)
+                                aadhaarGroup?.frontDoc?.name
+                                    ?.substringBefore("_Aadhaar")?.replace("_", " ")
+                                    ?: aadhaarGroup?.displayName ?: ""
+                            else
+                                groupDisplayName
+                            showRenamePairDialog = true
                         }
-                    } else {
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                ) {
+                    Row(
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Text(
+                            groupDisplayName,
+                            color      = Ink,
+                            fontSize   = 17.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines   = 1,
+                            overflow   = TextOverflow.Ellipsis
+                        )
+                        // Subtle inline affordance — whispers "I'm editable"
+                        Icon(
+                            Icons.Default.DriveFileRenameOutline,
+                            contentDescription = null,
+                            tint     = InkDim,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                    if (!isAadhaarGroup && !isPassportGroup) {
                         Text(
                             "${docs.size} document${if (docs.size != 1) "s" else ""} · long-press to reorder",
-                            color = InkDim, fontSize = 11.sp
+                            color    = InkDim,
+                            fontSize = 11.sp
                         )
                     }
                 }
-                // Rename action in header
-                IconButton(onClick = {
-                    pairRenameText = if (isAadhaarGroup)
-                        aadhaarGroup?.frontDoc?.name
-                            ?.substringBefore("_Aadhaar")?.replace("_", " ")
-                            ?: aadhaarGroup?.displayName ?: ""
-                    else
-                        groupDisplayName
-                    showRenamePairDialog = true
-                }) {
-                    Icon(
-                        Icons.Default.DriveFileRenameOutline, null,
-                        tint = InkMid, modifier = Modifier.size(20.dp)
-                    )
-                }
             }
             Box(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                    .height(1.dp).background(StrokeLight)
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(StrokeLight)
             )
         }
 
@@ -233,23 +258,21 @@ fun GroupDetailScreen(
             }
         } else {
             LazyColumn(
-                contentPadding      = PaddingValues(top = 20.dp, bottom = 60.dp),
-                modifier            = Modifier.fillMaxSize()
+                contentPadding = PaddingValues(top = 20.dp, bottom = 60.dp),
+                modifier       = Modifier.fillMaxSize()
             ) {
 
                 if (isAadhaarGroup && aadhaarGroup != null) {
                     // ── Aadhaar: full-size card pair ───────────────────────
                     item(key = "aadhaar_cards") {
                         AadhaarCardPair(
-                            group        = aadhaarGroup,
-                            onFrontTap   = { aadhaarGroup.frontDoc?.let { onDocClick(it, docs) } },
-                            onBackTap    = { aadhaarGroup.backDoc?.let  { onDocClick(it, docs) } },
-                            onFrontMore  = { aadhaarGroup.frontDoc?.let { contextDoc = it } },
-                            onBackMore   = { aadhaarGroup.backDoc?.let  { contextDoc = it } }
+                            group       = aadhaarGroup,
+                            onFrontTap  = { aadhaarGroup.frontDoc?.let { onDocClick(it, docs) } },
+                            onBackTap   = { aadhaarGroup.backDoc?.let  { onDocClick(it, docs) } },
+                            onFrontMore = { aadhaarGroup.frontDoc?.let { contextDoc = it } },
+                            onBackMore  = { aadhaarGroup.backDoc?.let  { contextDoc = it } }
                         )
                     }
-
-                    // ── Aadhaar: inline quick actions ──────────────────────
                     item(key = "aadhaar_actions") {
                         AadhaarInlineActions(
                             onSwap    = {
@@ -263,20 +286,28 @@ fun GroupDetailScreen(
                         )
                     }
 
-                    // ── Aadhaar: details section ───────────────────────────
-                    val hasDetails = listOf(
-                        aadhaarGroup.frontDoc?.aadhaarName,
-                        aadhaarGroup.backDoc?.aadhaarName,
-                        aadhaarGroup.dateOfBirth,
-                        aadhaarGroup.gender,
-                        aadhaarGroup.maskedNumber,
-                        aadhaarGroup.address
-                    ).any { !it.isNullOrBlank() }
-
-                    if (hasDetails) {
-                        item(key = "aadhaar_details") {
-                            AadhaarDetailsSection(group = aadhaarGroup)
-                        }
+                } else if (isPassportGroup && passportGroup != null) {
+                    // ── Passport: full-size page pair ──────────────────────
+                    item(key = "passport_cards") {
+                        PassportCardPair(
+                            group          = passportGroup,
+                            onDataPageTap  = { passportGroup.frontDoc?.let { onDocClick(it, docs) } },
+                            onBackPageTap  = { passportGroup.backDoc?.let  { onDocClick(it, docs) } },
+                            onDataPageMore = { passportGroup.frontDoc?.let { contextDoc = it } },
+                            onBackPageMore = { passportGroup.backDoc?.let  { contextDoc = it } }
+                        )
+                    }
+                    item(key = "passport_actions") {
+                        AadhaarInlineActions(
+                            onSwap    = {
+                                viewModel.swapPassportSides(passportGroup)
+                                Toast.makeText(context, "Pages swapped", Toast.LENGTH_SHORT).show()
+                            },
+                            onUngroup = {
+                                viewModel.ungroupPassport(passportGroup)
+                                onBack()
+                            }
+                        )
                     }
 
                 } else {
@@ -328,15 +359,15 @@ fun GroupDetailScreen(
                                             }
                                             .pointerInput(doc.id) {
                                                 detectDragGesturesAfterLongPress(
-                                                    onDragStart = { dragState = DragState(idx = flatIdx) },
-                                                    onDrag      = { change, amount ->
+                                                    onDragStart  = { dragState = DragState(idx = flatIdx) },
+                                                    onDrag       = { change, amount ->
                                                         change.consume()
                                                         dragState = dragState.copy(
                                                             deltaX = dragState.deltaX + amount.x,
                                                             deltaY = dragState.deltaY + amount.y
                                                         )
                                                     },
-                                                    onDragEnd   = {
+                                                    onDragEnd    = {
                                                         val cur = dragState
                                                         if (cur.idx >= 0) {
                                                             val p = cardPos[cur.idx]
@@ -370,6 +401,24 @@ fun GroupDetailScreen(
                                 }
                                 repeat(columnCount - rowDocs.size) { Spacer(Modifier.weight(1f)) }
                             }
+                        }
+                    }
+                }
+
+                if (docsWithDetails.isNotEmpty()) {
+                    item(key = "doc_details_header") {
+                        DocumentDetailsHeader(
+                            count          = docsWithDetails.size,
+                            isAadhaarGroup = isAadhaarGroup || isPassportGroup
+                        )
+                    }
+
+                    docsWithDetails.forEach { detailDoc ->
+                        item(key = "doc_detail_${detailDoc.id}") {
+                            DocumentDetailsCard(
+                                document = detailDoc,
+                                onEdit = { onEditDetails(detailDoc) }        // ← navigates to EditDetailsScreen
+                            )
                         }
                     }
                 }
@@ -417,23 +466,31 @@ fun GroupDetailScreen(
                     ) {
                         if (doc.thumbnailPath != null)
                             AsyncImage(
-                                model = doc.thumbnailPath, contentDescription = null,
-                                contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()
+                                model              = doc.thumbnailPath,
+                                contentDescription = null,
+                                contentScale       = ContentScale.Crop,
+                                modifier           = Modifier.fillMaxSize()
                             )
-                        else Icon(Icons.Default.Image, null, tint = InkDim,
-                            modifier = Modifier.align(Alignment.Center).size(22.dp))
+                        else Icon(
+                            Icons.Default.Image, null,
+                            tint     = InkDim,
+                            modifier = Modifier.align(Alignment.Center).size(22.dp)
+                        )
                     }
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            doc.name, color = Ink, fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold, maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            doc.name,
+                            color      = Ink,
+                            fontSize   = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines   = 1,
+                            overflow   = TextOverflow.Ellipsis
                         )
                         Spacer(Modifier.height(3.dp))
-                        val label = if (isAadhaarGroup) doc.groupBadgeLabel() else (doc.docClassLabel ?: "Other")
+                        val label = if (isAadhaarGroup || isPassportGroup) doc.groupBadgeLabel() else (doc.docClassLabel ?: "Other")
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
+                            verticalAlignment     = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             Box(Modifier.size(7.dp).clip(CircleShape).background(TypeColors[label] ?: InkMid))
@@ -449,23 +506,44 @@ fun GroupDetailScreen(
                     contextDoc = null
                 }
 
-                HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
-                    modifier = Modifier.padding(horizontal = 20.dp))
+                HorizontalDivider(
+                    color     = StrokeLight,
+                    thickness = 0.5.dp,
+                    modifier  = Modifier.padding(horizontal = 20.dp)
+                )
 
                 ContextAction(
                     icon  = Icons.Default.DriveFileRenameOutline,
                     label = "Rename file",
                     color = AadhaarBlue
                 ) {
-                    actionDoc = doc
+                    actionDoc     = doc
                     renameDocText = doc.name
                     showRenameDocDialog = true
+                    contextDoc    = null
+                }
+
+                HorizontalDivider(
+                    color     = StrokeLight,
+                    thickness = 0.5.dp,
+                    modifier  = Modifier.padding(horizontal = 20.dp)
+                )
+
+                ContextAction(
+                    icon  = Icons.Default.CreditCard,
+                    label = "Edit extracted details",
+                    color = AadhaarPurple
+                ) {
+                    onEditDetails(doc)
                     contextDoc = null
                 }
 
                 if (isAadhaarGroup && aadhaarGroup != null) {
-                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
-                        modifier = Modifier.padding(horizontal = 20.dp))
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
                     ContextAction(
                         icon  = Icons.Default.SwapHoriz,
                         label = "Swap Front / Back",
@@ -475,29 +553,84 @@ fun GroupDetailScreen(
                         Toast.makeText(context, "Sides swapped", Toast.LENGTH_SHORT).show()
                         contextDoc = null
                     }
-                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
-                        modifier = Modifier.padding(horizontal = 20.dp))
-                    ContextAction(icon = Icons.Default.DeleteOutline, label = "Delete file", color = DangerRed) {
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
+                    ContextAction(
+                        icon  = Icons.Default.DeleteOutline,
+                        label = "Delete file",
+                        color = DangerRed
+                    ) {
                         actionDoc = doc
                         showDeleteDocDialog = true
                         contextDoc = null
                     }
-                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
-                        modifier = Modifier.padding(horizontal = 20.dp))
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
                     ContextAction(icon = Icons.Default.LinkOff, label = "Ungroup pair", color = InkMid) {
                         viewModel.ungroupAadhaar(aadhaarGroup)
                         contextDoc = null
                         onBack()
                     }
+                } else if (isPassportGroup && passportGroup != null) {
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
+                    ContextAction(
+                        icon  = Icons.Default.SwapHoriz,
+                        label = "Swap Data / Back page",
+                        color = AadhaarGreen
+                    ) {
+                        viewModel.swapPassportSides(passportGroup)
+                        Toast.makeText(context, "Pages swapped", Toast.LENGTH_SHORT).show()
+                        contextDoc = null
+                    }
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
+                    ContextAction(
+                        icon  = Icons.Default.DeleteOutline,
+                        label = "Delete file",
+                        color = DangerRed
+                    ) {
+                        actionDoc = doc
+                        showDeleteDocDialog = true
+                        contextDoc = null
+                    }
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
+                    ContextAction(icon = Icons.Default.LinkOff, label = "Ungroup pair", color = InkMid) {
+                        viewModel.ungroupPassport(passportGroup)
+                        contextDoc = null
+                        onBack()
+                    }
                 } else {
-                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
-                        modifier = Modifier.padding(horizontal = 20.dp))
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
                     ContextAction(icon = Icons.Default.LinkOff, label = "Remove from group", color = InkMid) {
                         viewModel.removeFromGroup(doc.id)
                         contextDoc = null
                     }
-                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
-                        modifier = Modifier.padding(horizontal = 20.dp))
+                    HorizontalDivider(
+                        color     = StrokeLight,
+                        thickness = 0.5.dp,
+                        modifier  = Modifier.padding(horizontal = 20.dp)
+                    )
                     ContextAction(icon = Icons.Default.FolderOff, label = "Disband entire group", color = DangerRed) {
                         viewModel.disbandGroup(groupId)
                         contextDoc = null
@@ -513,37 +646,50 @@ fun GroupDetailScreen(
         val doc = actionDoc
         AlertDialog(
             onDismissRequest = { showRenameDocDialog = false; actionDoc = null },
-            containerColor = BgCard, shape = RoundedCornerShape(20.dp),
-            title   = { Text("Rename file", color = Ink, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
-            text    = {
+            containerColor   = BgCard,
+            shape            = RoundedCornerShape(20.dp),
+            title = { Text("Rename file", color = Ink, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            text  = {
                 OutlinedTextField(
-                    value = renameDocText, onValueChange = { renameDocText = it },
-                    singleLine = true, label = { Text("File name") },
-                    shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()
+                    value         = renameDocText,
+                    onValueChange = { renameDocText = it },
+                    singleLine    = true,
+                    label         = { Text("File name") },
+                    shape         = RoundedCornerShape(12.dp),
+                    modifier      = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
                 Box(
-                    Modifier.clip(RoundedCornerShape(12.dp))
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
                         .background(if (renameDocText.isBlank()) BgSurface else AadhaarBlue)
                         .clickable(enabled = renameDocText.isNotBlank()) {
                             doc?.let { viewModel.renameDocument(it, renameDocText.trim()) }
-                            showRenameDocDialog = false; actionDoc = null
+                            showRenameDocDialog = false
+                            actionDoc = null
                         }
                         .padding(horizontal = 20.dp, vertical = 11.dp)
                 ) {
-                    Text("Rename",
-                        color = if (renameDocText.isBlank()) InkDim else Color.White,
-                        fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text(
+                        "Rename",
+                        color      = if (renameDocText.isBlank()) InkDim else Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize   = 14.sp
+                    )
                 }
             },
             dismissButton = {
                 Box(
-                    Modifier.clip(RoundedCornerShape(12.dp)).background(BgSurface)
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BgSurface)
                         .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
                         .clickable { showRenameDocDialog = false; actionDoc = null }
                         .padding(horizontal = 20.dp, vertical = 11.dp)
-                ) { Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium) }
+                ) {
+                    Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
             }
         )
     }
@@ -553,31 +699,43 @@ fun GroupDetailScreen(
         val doc = actionDoc
         AlertDialog(
             onDismissRequest = { showDeleteDocDialog = false; actionDoc = null },
-            containerColor = BgCard, shape = RoundedCornerShape(20.dp),
+            containerColor   = BgCard,
+            shape            = RoundedCornerShape(20.dp),
             title = { Text("Delete file", color = Ink, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
             text  = {
-                Text("Delete \"${doc?.name ?: ""}\"? This cannot be undone.",
-                    color = InkMid, fontSize = 14.sp)
+                Text(
+                    "Delete \"${doc?.name ?: ""}\"? This cannot be undone.",
+                    color    = InkMid,
+                    fontSize = 14.sp
+                )
             },
             confirmButton = {
                 Box(
-                    Modifier.clip(RoundedCornerShape(12.dp))
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
                         .background(DangerRed)
                         .clickable {
                             doc?.let { viewModel.deleteDocument(it) }
-                            showDeleteDocDialog = false; actionDoc = null
+                            showDeleteDocDialog = false
+                            actionDoc = null
                             if (docs.size <= 1) onBack()
                         }
                         .padding(horizontal = 20.dp, vertical = 11.dp)
-                ) { Text("Delete", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp) }
+                ) {
+                    Text("Delete", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
             },
             dismissButton = {
                 Box(
-                    Modifier.clip(RoundedCornerShape(12.dp)).background(BgSurface)
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BgSurface)
                         .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
                         .clickable { showDeleteDocDialog = false; actionDoc = null }
                         .padding(horizontal = 20.dp, vertical = 11.dp)
-                ) { Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium) }
+                ) {
+                    Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
             }
         )
     }
@@ -586,19 +744,28 @@ fun GroupDetailScreen(
     if (showRenamePairDialog) {
         AlertDialog(
             onDismissRequest = { showRenamePairDialog = false },
-            containerColor = BgCard, shape = RoundedCornerShape(20.dp),
-            title = { Text(if (isAadhaarGroup) "Rename pair" else "Rename group",
-                color = Ink, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            containerColor   = BgCard,
+            shape            = RoundedCornerShape(20.dp),
+            title = {
+                Text(
+                    if (isAadhaarGroup) "Rename pair" else "Rename group",
+                    color = Ink, fontWeight = FontWeight.Bold, fontSize = 17.sp
+                )
+            },
             text  = {
                 OutlinedTextField(
-                    value = pairRenameText, onValueChange = { pairRenameText = it },
-                    singleLine = true, label = { Text(if (isAadhaarGroup) "Pair name" else "Group name") },
-                    shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()
+                    value         = pairRenameText,
+                    onValueChange = { pairRenameText = it },
+                    singleLine    = true,
+                    label         = { Text(if (isAadhaarGroup) "Pair name" else "Group name") },
+                    shape         = RoundedCornerShape(12.dp),
+                    modifier      = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
                 Box(
-                    Modifier.clip(RoundedCornerShape(12.dp))
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
                         .background(if (pairRenameText.isBlank()) BgSurface else Coral)
                         .clickable(enabled = pairRenameText.isNotBlank()) {
                             if (isAadhaarGroup && aadhaarGroup != null) {
@@ -612,35 +779,306 @@ fun GroupDetailScreen(
                         }
                         .padding(horizontal = 20.dp, vertical = 11.dp)
                 ) {
-                    Text("Rename",
-                        color = if (pairRenameText.isBlank()) InkDim else Color.White,
-                        fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text(
+                        "Rename",
+                        color      = if (pairRenameText.isBlank()) InkDim else Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize   = 14.sp
+                    )
                 }
             },
             dismissButton = {
                 Box(
-                    Modifier.clip(RoundedCornerShape(12.dp)).background(BgSurface)
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BgSurface)
                         .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
                         .clickable { showRenamePairDialog = false }
                         .padding(horizontal = 20.dp, vertical = 11.dp)
-                ) { Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium) }
+                ) {
+                    Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        )
+    }
+
+    if (editableDetailsDoc != null) {
+        val doc = editableDetailsDoc!!
+        AlertDialog(
+            onDismissRequest = { editableDetailsDoc = null },
+            containerColor   = BgCard,
+            shape            = RoundedCornerShape(20.dp),
+            title = {
+                Text(
+                    "Edit extracted details",
+                    color = Ink,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        doc.name,
+                        color = InkMid,
+                        fontSize = 12.sp
+                    )
+
+                    editableDetails.forEachIndexed { index, detail ->
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = detail.label,
+                                onValueChange = { value ->
+                                    editableDetails = editableDetails.toMutableList().apply {
+                                        this[index] = this[index].copy(label = value)
+                                    }
+                                },
+                                singleLine = true,
+                                label = { Text("Field label") },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = detail.value,
+                                onValueChange = { value ->
+                                    editableDetails = editableDetails.toMutableList().apply {
+                                        this[index] = this[index].copy(
+                                            value = value,
+                                            multiline = value.length > 42 || value.contains("\n")
+                                        )
+                                    }
+                                },
+                                label = { Text("Field value") },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                minLines = if (detail.multiline) 3 else 1
+                            )
+                            if (editableDetails.size > 1) {
+                                Box(
+                                    Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(DangerRed.copy(0.08f))
+                                        .clickable {
+                                            editableDetails = editableDetails.toMutableList().apply {
+                                                removeAt(index)
+                                            }
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        "Remove field",
+                                        color = DangerRed,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(BgSurface)
+                            .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
+                            .clickable {
+                                editableDetails = editableDetails + DocumentDetail("Field", "")
+                            }
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                    ) {
+                        Text("Add field", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            },
+            confirmButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Coral)
+                        .clickable {
+                            viewModel.updateDocumentExtractedDetails(doc, editableDetails)
+                            editableDetailsDoc = null
+                        }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text(
+                        "Save",
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
+                    )
+                }
+            },
+            dismissButton = {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BgSurface)
+                        .border(1.dp, StrokeLight, RoundedCornerShape(12.dp))
+                        .clickable { editableDetailsDoc = null }
+                        .padding(horizontal = 20.dp, vertical = 11.dp)
+                ) {
+                    Text("Cancel", color = InkMid, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
             }
         )
     }
 }
 
+internal fun Document.groupDetailRows(): List<DocumentDetail> {
+    if (extractedDetails.isNotEmpty()) return extractedDetails
+
+    return buildList {
+        aadhaarName?.takeIf { it.isNotBlank() }?.let { add(DocumentDetail("Name", it)) }
+        aadhaarDob?.takeIf { it.isNotBlank() }?.let { add(DocumentDetail("DOB", it)) }
+        aadhaarGender?.takeIf { it.isNotBlank() }?.let { add(DocumentDetail("Gender", it)) }
+        aadhaarMaskedNumber?.takeIf { it.isNotBlank() }?.let { add(DocumentDetail("Aadhaar", it)) }
+        aadhaarAddress?.takeIf { it.isNotBlank() }?.let { add(DocumentDetail("Address", it, multiline = true)) }
+    }
+}
+
+@Composable
+private fun DocumentDetailsHeader(
+    count: Int,
+    isAadhaarGroup: Boolean
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            if (isAadhaarGroup) "Document details" else "Extracted details",
+            color = Ink,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            "$count document${if (count != 1) "s" else ""} with stored OCR details",
+            color = InkDim,
+            fontSize = 12.sp
+        )
+    }
+}
+
+@Composable
+private fun DocumentDetailsCard(
+    document: Document,
+    onEdit: () -> Unit
+) {
+    val detailRows = document.groupDetailRows()
+    val label = document.docClassLabel ?: "Other"
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(BgCard)
+            .border(1.dp, StrokeLight, RoundedCornerShape(20.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    document.name,
+                    color = Ink,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    label,
+                    color = InkDim,
+                    fontSize = 12.sp
+                )
+            }
+
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(CoralSoft)
+                    .clickable(onClick = onEdit)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    "Edit",
+                    color = Coral,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+
+        detailRows.forEachIndexed { index, item ->
+            AadhaarDetailRow(
+                label = item.label,
+                value = item.value,
+                multiline = item.multiline,
+                emphasize = item.label.equals("Aadhaar", true) || item.label.equals("PAN", true),
+                showDivider = index != detailRows.lastIndex
+            )
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // AADHAAR CARD PAIR — full-width ID card presentation
-// Stacked vertically: Front on top, Back below. Each at 1.586:1 (ISO 7810)
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
+private fun PassportCardPair(
+    group          : PassportGroup,
+    onDataPageTap  : () -> Unit,
+    onBackPageTap  : () -> Unit,
+    onDataPageMore : () -> Unit,
+    onBackPageMore : () -> Unit,
+) {
+    val teal   = Color(0xFF0D9488)
+    val indigo = Color(0xFF4338CA)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        AadhaarCardSlot(
+            doc         = group.frontDoc,
+            sideLabel   = "Data Page",
+            accentColor = teal,
+            isPresent   = group.frontDoc != null,
+            onTap       = onDataPageTap,
+            onMoreTap   = onDataPageMore
+        )
+        AadhaarCardSlot(
+            doc         = group.backDoc,
+            sideLabel   = "Back Page",
+            accentColor = indigo,
+            isPresent   = group.backDoc != null,
+            onTap       = onBackPageTap,
+            onMoreTap   = onBackPageMore
+        )
+    }
+}
+
+@Composable
 private fun AadhaarCardPair(
-    group       : AadhaarGroup,
-    onFrontTap  : () -> Unit,
-    onBackTap   : () -> Unit,
-    onFrontMore : () -> Unit,
-    onBackMore  : () -> Unit,
+    group      : AadhaarGroup,
+    onFrontTap : () -> Unit,
+    onBackTap  : () -> Unit,
+    onFrontMore: () -> Unit,
+    onBackMore : () -> Unit,
 ) {
     Column(
         Modifier
@@ -649,37 +1087,36 @@ private fun AadhaarCardPair(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         AadhaarCardSlot(
-            doc          = group.frontDoc,
-            sideLabel    = "Front",
-            accentColor  = AadhaarBlue,
-            isPresent    = group.frontDoc != null,
-            onTap        = onFrontTap,
-            onMoreTap    = onFrontMore
+            doc         = group.frontDoc,
+            sideLabel   = "Front",
+            accentColor = AadhaarBlue,
+            isPresent   = group.frontDoc != null,
+            onTap       = onFrontTap,
+            onMoreTap   = onFrontMore
         )
         AadhaarCardSlot(
-            doc          = group.backDoc,
-            sideLabel    = "Back",
-            accentColor  = AadhaarPurple,
-            isPresent    = group.backDoc != null,
-            onTap        = onBackTap,
-            onMoreTap    = onBackMore
+            doc         = group.backDoc,
+            sideLabel   = "Back",
+            accentColor = AadhaarPurple,
+            isPresent   = group.backDoc != null,
+            onTap       = onBackTap,
+            onMoreTap   = onBackMore
         )
     }
 }
 
 @Composable
 private fun AadhaarCardSlot(
-    doc         : Document?,
-    sideLabel   : String,
-    accentColor : Color,
-    isPresent   : Boolean,
-    onTap       : () -> Unit,
-    onMoreTap   : () -> Unit,
+    doc        : Document?,
+    sideLabel  : String,
+    accentColor: Color,
+    isPresent  : Boolean,
+    onTap      : () -> Unit,
+    onMoreTap  : () -> Unit,
 ) {
     Box(
         Modifier
             .fillMaxWidth()
-            // ISO 7810 ID-1 card ratio (85.6mm × 53.98mm ≈ 1.586:1)
             .aspectRatio(1.586f)
             .shadow(
                 elevation    = 6.dp,
@@ -697,7 +1134,6 @@ private fun AadhaarCardSlot(
             .then(if (isPresent) Modifier.clickable(onClick = onTap) else Modifier)
     ) {
         if (doc?.thumbnailPath != null) {
-            // ── Actual scanned image ──────────────────────────────────────
             AsyncImage(
                 model              = doc.thumbnailPath,
                 contentDescription = sideLabel,
@@ -705,7 +1141,6 @@ private fun AadhaarCardSlot(
                 modifier           = Modifier.fillMaxSize()
             )
 
-            // Gradient overlay — bottom only, for label readability
             Box(
                 Modifier
                     .fillMaxSize()
@@ -717,7 +1152,6 @@ private fun AadhaarCardSlot(
                     )
             )
 
-            // ── Doc name (bottom-left) ────────────────────────────────────
             Text(
                 doc.name,
                 color      = Color.White,
@@ -730,7 +1164,6 @@ private fun AadhaarCardSlot(
                     .padding(start = 14.dp, bottom = 14.dp, end = 46.dp)
             )
 
-            // ── 3-dot menu (bottom-right) ─────────────────────────────────
             Box(
                 Modifier
                     .align(Alignment.BottomEnd)
@@ -749,11 +1182,8 @@ private fun AadhaarCardSlot(
                 )
             }
         } else {
-            // ── Empty slot ────────────────────────────────────────────────
             Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(18.dp),
+                Modifier.fillMaxSize().padding(18.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -783,7 +1213,6 @@ private fun AadhaarCardSlot(
             }
         }
 
-        // ── Side label chip (top-left) — always visible ───────────────────
         Box(
             Modifier
                 .align(Alignment.TopStart)
@@ -811,13 +1240,13 @@ private fun AadhaarCardSlot(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// AADHAAR INLINE ACTIONS — Swap / Ungroup pills below the cards
+// AADHAAR INLINE ACTIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun AadhaarInlineActions(
-    onSwap    : () -> Unit,
-    onUngroup : () -> Unit,
+    onSwap   : () -> Unit,
+    onUngroup: () -> Unit,
 ) {
     Row(
         Modifier
@@ -825,7 +1254,6 @@ private fun AadhaarInlineActions(
             .padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Swap
         Box(
             Modifier
                 .weight(1f)
@@ -840,13 +1268,10 @@ private fun AadhaarInlineActions(
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(7.dp)
             ) {
-                Icon(Icons.Default.SwapHoriz, null,
-                    tint = AadhaarBlue, modifier = Modifier.size(18.dp))
-                Text("Swap sides", color = Ink,
-                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Icon(Icons.Default.SwapHoriz, null, tint = AadhaarBlue, modifier = Modifier.size(18.dp))
+                Text("Swap sides", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             }
         }
-        // Ungroup
         Box(
             Modifier
                 .weight(1f)
@@ -861,38 +1286,26 @@ private fun AadhaarInlineActions(
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(7.dp)
             ) {
-                Icon(Icons.Default.LinkOff, null,
-                    tint = InkMid, modifier = Modifier.size(18.dp))
-                Text("Ungroup", color = Ink,
-                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Icon(Icons.Default.LinkOff, null, tint = InkMid, modifier = Modifier.size(18.dp))
+                Text("Ungroup", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             }
         }
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// AADHAAR DETAILS SECTION — clean info hierarchy
+// AADHAAR DETAILS SECTION
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun AadhaarDetailsSection(group: AadhaarGroup) {
     val extractedName = group.frontDoc?.aadhaarName ?: group.backDoc?.aadhaarName
     val detailRows = buildList {
-        extractedName?.takeIf { it.isNotBlank() }?.let {
-            add(AadhaarDetailItem(label = "Name", value = it))
-        }
-        group.dateOfBirth?.takeIf { it.isNotBlank() }?.let {
-            add(AadhaarDetailItem(label = "DOB", value = it))
-        }
-        group.gender?.takeIf { it.isNotBlank() }?.let {
-            add(AadhaarDetailItem(label = "Gender", value = it))
-        }
-        group.maskedNumber?.takeIf { it.isNotBlank() }?.let {
-            add(AadhaarDetailItem(label = "Aadhaar", value = it, emphasize = true))
-        }
-        group.address?.takeIf { it.isNotBlank() }?.let {
-            add(AadhaarDetailItem(label = "Address", value = it, multiline = true))
-        }
+        extractedName?.takeIf { it.isNotBlank() }?.let { add(AadhaarDetailItem("Name", it)) }
+        group.dateOfBirth?.takeIf { it.isNotBlank() }?.let { add(AadhaarDetailItem("DOB", it)) }
+        group.gender?.takeIf { it.isNotBlank() }?.let { add(AadhaarDetailItem("Gender", it)) }
+        group.maskedNumber?.takeIf { it.isNotBlank() }?.let { add(AadhaarDetailItem("Aadhaar", it, emphasize = true)) }
+        group.address?.takeIf { it.isNotBlank() }?.let { add(AadhaarDetailItem("Address", it, multiline = true)) }
     }
 
     Column(
@@ -905,28 +1318,19 @@ private fun AadhaarDetailsSection(group: AadhaarGroup) {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        // ── Section header ────────────────────────────────────────────────
         Row(
             Modifier.fillMaxWidth(),
             verticalAlignment     = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                "Aadhaar details",
-                color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                "Front + back",
-                color = InkDim,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium
-            )
+            Text("Aadhaar details", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text("Front + back", color = InkDim, fontSize = 11.sp, fontWeight = FontWeight.Medium)
         }
 
         Text(
             "Extracted from the scanned Aadhaar pair.",
-            color = InkMid,
-            fontSize = 12.sp,
+            color      = InkMid,
+            fontSize   = 12.sp,
             lineHeight = 18.sp
         )
 
@@ -934,10 +1338,10 @@ private fun AadhaarDetailsSection(group: AadhaarGroup) {
 
         detailRows.forEachIndexed { index, item ->
             AadhaarDetailRow(
-                label = item.label,
-                value = item.value,
-                multiline = item.multiline,
-                emphasize = item.emphasize,
+                label       = item.label,
+                value       = item.value,
+                multiline   = item.multiline,
+                emphasize   = item.emphasize,
                 showDivider = index != detailRows.lastIndex
             )
         }
@@ -945,33 +1349,28 @@ private fun AadhaarDetailsSection(group: AadhaarGroup) {
 }
 
 private data class AadhaarDetailItem(
-    val label: String,
-    val value: String,
+    val label    : String,
+    val value    : String,
     val multiline: Boolean = false,
     val emphasize: Boolean = false
 )
 
 @Composable
-private fun AadhaarDetailRow(
-    label: String,
-    value: String,
-    multiline: Boolean = false,
-    emphasize: Boolean = false,
+internal fun AadhaarDetailRow(
+    label      : String,
+    value      : String,
+    multiline  : Boolean = false,
+    emphasize  : Boolean = false,
     showDivider: Boolean = true
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (multiline) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    label,
-                    color = InkDim,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium
-                )
+                Text(label, color = InkDim, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 Text(
                     value,
-                    color = Ink,
-                    fontSize = 15.sp,
+                    color      = Ink,
+                    fontSize   = 15.sp,
                     fontWeight = if (emphasize) FontWeight.SemiBold else FontWeight.Medium,
                     lineHeight = 22.sp
                 )
@@ -980,32 +1379,30 @@ private fun AadhaarDetailRow(
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.Top
+                verticalAlignment     = Alignment.Top
             ) {
                 Text(
                     label,
-                    color = InkDim,
-                    fontSize = 12.sp,
+                    color      = InkDim,
+                    fontSize   = 12.sp,
                     fontWeight = FontWeight.Medium,
-                    modifier = Modifier.width(76.dp)
+                    modifier   = Modifier.width(76.dp)
                 )
                 Text(
                     value,
-                    color = if (emphasize) AadhaarBlue else Ink,
-                    fontSize = 15.sp,
+                    color      = if (emphasize) AadhaarBlue else Ink,
+                    fontSize   = 15.sp,
                     fontWeight = if (emphasize) FontWeight.SemiBold else FontWeight.Medium,
-                    modifier = Modifier.weight(1f)
+                    modifier   = Modifier.weight(1f)
                 )
             }
         }
-        if (showDivider) {
-            HorizontalDivider(color = StrokeLight, thickness = 0.5.dp)
-        }
+        if (showDivider) HorizontalDivider(color = StrokeLight, thickness = 0.5.dp)
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GROUP GALLERY TILE — regular (non-Aadhaar) group tile with position badge
+// GROUP GALLERY TILE
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -1025,11 +1422,16 @@ private fun GroupGalleryTile(
     ) {
         if (doc.thumbnailPath != null)
             AsyncImage(
-                model = doc.thumbnailPath, contentDescription = null,
-                contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()
+                model              = doc.thumbnailPath,
+                contentDescription = null,
+                contentScale       = ContentScale.Crop,
+                modifier           = Modifier.fillMaxSize()
             )
-        else Icon(Icons.Default.Image, null,
-            Modifier.size(28.dp).align(Alignment.Center), tint = InkDim)
+        else Icon(
+            Icons.Default.Image, null,
+            Modifier.size(28.dp).align(Alignment.Center),
+            tint = InkDim
+        )
 
         Box(
             Modifier
@@ -1038,34 +1440,41 @@ private fun GroupGalleryTile(
         )
 
         Text(
-            doc.name, color = Color.White, fontSize = 9.sp,
-            fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.align(Alignment.BottomStart).padding(start = 6.dp, bottom = 6.dp, end = 28.dp)
+            doc.name,
+            color      = Color.White,
+            fontSize   = 9.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines   = 1,
+            overflow   = TextOverflow.Ellipsis,
+            modifier   = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 6.dp, bottom = 6.dp, end = 28.dp)
         )
 
         val label    = doc.groupBadgeLabel()
         val colorKey = if (label == "Front" || label == "Back") "Aadhaar" else label
         val c        = TypeColors[colorKey] ?: InkMid
         Box(
-            Modifier.align(Alignment.TopStart).padding(4.dp)
+            Modifier
+                .align(Alignment.TopStart).padding(4.dp)
                 .clip(RoundedCornerShape(3.dp)).background(c.copy(0.85f))
                 .padding(horizontal = 5.dp, vertical = 2.dp)
         ) {
             Text(label, color = Color.White, fontSize = 7.sp, fontWeight = FontWeight.SemiBold)
         }
 
-        // Position number badge
         Box(
-            Modifier.align(Alignment.TopEnd).padding(4.dp)
+            Modifier
+                .align(Alignment.TopEnd).padding(4.dp)
                 .size(20.dp).clip(CircleShape).background(Color.Black.copy(0.55f)),
             contentAlignment = Alignment.Center
         ) {
             Text("$index", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
         }
 
-        // 3-dot
         Box(
-            Modifier.align(Alignment.BottomEnd).padding(2.dp)
+            Modifier
+                .align(Alignment.BottomEnd).padding(2.dp)
                 .size(24.dp).clip(CircleShape).clickable(onClick = onMoreTap),
             contentAlignment = Alignment.Center
         ) {

@@ -1,6 +1,10 @@
 package com.example.docscanner.presentation.shared
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,22 +12,29 @@ import com.example.docscanner.data.classifier.DocumentClassifier
 import com.example.docscanner.data.export.DocumentExporter
 import com.example.docscanner.data.masking.AadhaarMasker
 import com.example.docscanner.data.masking.PanMasker
-import com.example.docscanner.data.ocr.MlKitOcrHelper
+import com.example.docscanner.data.ocr.ExtractionUtils
+import com.example.docscanner.data.ocr.fusion.ExtractionFusion
 import com.example.docscanner.data.processor.DocumentProcessor
 import com.example.docscanner.data.security.AadhaarSecureHelper
 import com.example.docscanner.domain.model.DocClassType
 import com.example.docscanner.domain.model.Document
+import com.example.docscanner.domain.model.DocumentDetail
 import com.example.docscanner.domain.model.DocumentCorners
+import com.example.docscanner.domain.model.ExtractedFields
 import com.example.docscanner.domain.model.ExportFormat
 import com.example.docscanner.domain.model.FolderExportType
 import com.example.docscanner.domain.model.ScannedPage
+import com.example.docscanner.domain.model.toDocumentDetailsJson
 import com.example.docscanner.domain.repository.DocumentRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 
@@ -34,13 +45,21 @@ data class ScannedMismatch(
     val folderLabel   : String
 )
 
+data class ScanSaveFeedback(
+    val id: Long = System.currentTimeMillis(),
+    val savedCount: Int,
+    val destinationLabel: String,
+    val mismatchCount: Int = 0
+)
+
 @HiltViewModel
 class ScannerViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val documentProcessor  : DocumentProcessor,
     val          exporter          : DocumentExporter,
     private val documentRepository : DocumentRepository,
     private val documentClassifier : DocumentClassifier,
-    private val ocrHelper          : MlKitOcrHelper,
+    private val extractionFusion   : ExtractionFusion,
     private val secureHelper       : AadhaarSecureHelper,   // ← NEW
     private val aadhaarMasker      : AadhaarMasker,
     private val panMasker          : PanMasker
@@ -49,9 +68,10 @@ class ScannerViewModel @Inject constructor(
     private val _state = MutableStateFlow(ScannerState())
     val state: StateFlow<ScannerState> = _state.asStateFlow()
 
-    private var lastAadhaarGroupId : String? = null
-    private var anchoredGroupId    : String? = null
-    private var lastTargetFolderId : String  = ""
+    private var lastAadhaarGroupId  : String? = null
+    private var anchoredGroupId     : String? = null
+    private var lastTargetFolderId  : String  = ""
+    private var lastPassportGroupId : String? = null
 
     private val pendingCropJobs = mutableListOf<Job>()
     private val cropJobLock     = Any()
@@ -85,9 +105,10 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun clearAadhaarGroup() {
-        lastAadhaarGroupId = null
-        anchoredGroupId    = null
-        lastTargetFolderId = ""
+        lastAadhaarGroupId  = null
+        anchoredGroupId     = null
+        lastTargetFolderId  = ""
+        lastPassportGroupId = null
     }
 
     fun onPhotoCaptured(bitmap: Bitmap, detectedCorners: DocumentCorners? = null) {
@@ -118,10 +139,49 @@ class ScannerViewModel @Inject constructor(
         synchronized(pendingCropJobs) { pendingCropJobs.add(job) }
     }
 
+    fun onImportedPages(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+
+        val currentState = _state.value
+        _state.value = currentState.copy(
+            isSaving = true,
+            saveSuccess = false,
+            saveFeedback = null
+        )
+
+        viewModelScope.launch {
+            try {
+                var importedCount = 0
+                uris.forEach { uri ->
+                    uriToBitmap(uri)?.let { bitmap ->
+                        importedCount++
+                        onPhotoCaptured(bitmap, null)
+                    }
+                }
+
+                if (importedCount == 0) {
+                    _state.value = _state.value.copy(isSaving = false)
+                    return@launch
+                }
+
+                onAutoSavePages()
+            } catch (e: Exception) {
+                Log.e("ScannerVM", "Failed to import pages", e)
+                _state.value = _state.value.copy(isSaving = false)
+            }
+        }
+    }
+
+    private val isFolderScan: Boolean
+        get() = _state.value.targetDocType != null
     fun onAutoSavePages() {
         val currentState = _state.value
         if (currentState.pages.isEmpty()) return
-        _state.value = currentState.copy(isSaving = true)
+        _state.value = currentState.copy(
+            isSaving = true,
+            saveSuccess = false,
+            saveFeedback = null
+        )
 
         val isFolderScan = currentState.targetDocType != null
 
@@ -132,6 +192,7 @@ class ScannerViewModel @Inject constructor(
         Log.d("AadhaarDebug", "pageCount: ${currentState.pages.size}")
         Log.d("AadhaarDebug", "anchoredGroupId (before): $anchoredGroupId")
         Log.d("AadhaarDebug", "lastAadhaarGroupId (before): $lastAadhaarGroupId")
+
 
         viewModelScope.launch {
             try {
@@ -146,8 +207,9 @@ class ScannerViewModel @Inject constructor(
                 val savedDocInfos    = mutableListOf<SavedDocInfo>()
                 val savedAadhaarDocs = mutableListOf<SavedAadhaarDocInfo>()
 
-                var lastAadhaarSide     : String? = null
+                var lastAadhaarSide      : String? = null
                 var lastAadhaarGroupId2 : String? = null
+                val savedPassportDocs   = mutableListOf<SavedPassportDocInfo>()
 
                 // ── Sort pages: FRONT before BACK ─────────────────────────────
                 val sortedPages = if (freshState.pages.all { it.docClassType != null }) {
@@ -179,6 +241,7 @@ class ScannerViewModel @Inject constructor(
 
                 Log.d("AadhaarDebug", "Processing ${sortedPages.size} pages after sort")
 
+
                 sortedPages.forEachIndexed { index, page ->
                     Log.d("AadhaarDebug", "─── Page $index ───")
 
@@ -196,11 +259,18 @@ class ScannerViewModel @Inject constructor(
                     var aadhaarGender  : String? = null
                     var aadhaarMaskedNumber: String? = null
                     var aadhaarAddress : String? = null
+                    var extractedDetails = emptyList<DocumentDetail>()
 
                     // Hashes — never store raw digits beyond this function scope
                     var aadhaarNumHash  : String? = null   // hash of full 12 digits
                     var aadhaarLast4Hash: String? = null   // hash of last 4 digits
                     var aadhaarDigitLen : Int     = 0      // 12, 4, or 0 — for reconciliation logic
+
+                    // Passport pairing (hashed passport number, side, group)
+                    var passportSide      : String? = null
+                    var passportGroupId   : String? = null
+                    var passportHolderName: String? = null
+                    var passportNumHashVal: String? = null   // cached hash for batch reconciliation
 
                     if (isFolderScan) {
                         val folderLabel = freshState.targetDocType!!
@@ -221,15 +291,33 @@ class ScannerViewModel @Inject constructor(
                         // resolves any mismatch from the modal.
                         docClassLabel = folderLabel
 
-                        if (detected.isAadhaar) {
-                            aadhaarSide = aadhaarSideOf(detected)
+                        val rawFolderOcrFields = try {
+                            extractNormalizedFields(originalBitmap, detected)
+                        } catch (e: Exception) {
+                            Log.e("AadhaarDebug", "Folder OCR failed", e)
+                            null
+                        }
 
-                            val ocrFields = try {
-                                ocrHelper.extractFields(originalBitmap, detected)
-                            } catch (e: Exception) {
-                                Log.e("AadhaarDebug", "Folder OCR failed", e)
-                                null
+                        // Passport OCR-override for folder scans (same logic as global scan)
+                        val (effectiveDetected, ocrFields) =
+                            if (detected == DocClassType.OTHER &&
+                                rawFolderOcrFields?.rawText?.let {
+                                    ExtractionUtils.PASSPORT_NO.containsMatchIn(it)
+                                } == true
+                            ) {
+                                Log.d("AadhaarDebug", "Folder: Passport OCR-override triggered")
+                                val pf = try {
+                                    extractNormalizedFields(originalBitmap, DocClassType.PASSPORT)
+                                } catch (e: Exception) { rawFolderOcrFields }
+                                DocClassType.PASSPORT to pf
+                            } else {
+                                detected to rawFolderOcrFields
                             }
+
+                        extractedDetails = ocrFields?.details.orEmpty().cleanDetails()
+
+                        if (effectiveDetected.isAadhaar) {
+                            aadhaarSide = aadhaarSideOf(effectiveDetected)
 
                             aadhaarName = ocrFields?.name?.replace("_", " ")
                             aadhaarDob = ocrFields?.dob
@@ -250,7 +338,7 @@ class ScannerViewModel @Inject constructor(
 
                             aadhaarGroupId = resolveGroupId(
                                 bitmap       = originalBitmap,
-                                detected     = detected,
+                                detected     = effectiveDetected,
                                 ocrFields    = ocrFields,
                                 inBatchDocs  = savedAadhaarDocs
                             )
@@ -261,27 +349,62 @@ class ScannerViewModel @Inject constructor(
                             Log.d("AadhaarDebug", "✗ isAadhaar=false → aadhaarSide=null, aadhaarGroupId=null")
                         }
 
-                        saveBitmap = maskIfNeeded(detected, originalBitmap)
+                        // ── Passport pairing ──────────────────────────────
+                        if (effectiveDetected == DocClassType.PASSPORT) {
+                            passportSide       = if (ocrFields?.hasMrz == true) "FRONT" else "BACK"
+                            passportHolderName = ocrFields?.name
+                            passportNumHashVal = ocrFields?.idNumber?.let { hashPassportNum(it) }
+                            passportGroupId    = resolvePassportGroupId(
+                                passportNumHash = passportNumHashVal,
+                                passportSide    = passportSide!!,
+                                inBatchDocs     = savedPassportDocs,
+                                sessionId       = freshState.sessionId
+                            )
+                        }
+
+                        saveBitmap = maskIfNeeded(effectiveDetected, originalBitmap)
                         smartName  = null
 
                     } else {
-                        val classifiedType = try {
+                        val rawClassifiedType = try {
                             documentClassifier.classify(originalBitmap)
                         } catch (e: Exception) {
                             Log.e("AadhaarDebug", "Classification failed", e)
                             page.docClassType ?: DocClassType.OTHER
                         }
 
-                        docClassLabel = classifiedType.displayName
-                        Log.d("AadhaarDebug", "Global scan → classifiedType: ${classifiedType.name}")
+                        Log.d("AadhaarDebug", "Global scan → classifiedType: ${rawClassifiedType.name}")
 
-                        val ocrFields = try {
-                            ocrHelper.extractFields(originalBitmap, classifiedType)
+                        val rawOcrFields = try {
+                            extractNormalizedFields(originalBitmap, rawClassifiedType)
                         } catch (e: Exception) {
                             Log.e("AadhaarDebug", "OCR failed", e)
                             null
                         }
 
+                        // ── Passport OCR-override ─────────────────────────
+                        // If the ML classifier said OTHER but the raw OCR text contains
+                        // a valid passport number ([A-Z]\d{7}), treat this page as a
+                        // passport and re-run extraction with the PassportExtractor.
+                        // This makes pairing work even when the model misclassifies.
+                        val (classifiedType, ocrFields) =
+                            if (rawClassifiedType == DocClassType.OTHER &&
+                                rawOcrFields?.rawText?.let {
+                                    ExtractionUtils.PASSPORT_NO.containsMatchIn(it)
+                                } == true
+                            ) {
+                                Log.d("AadhaarDebug", "Passport OCR-override triggered")
+                                val passportFields = try {
+                                    extractNormalizedFields(originalBitmap, DocClassType.PASSPORT)
+                                } catch (e: Exception) { rawOcrFields }
+                                DocClassType.PASSPORT to passportFields
+                            } else {
+                                rawClassifiedType to rawOcrFields
+                            }
+
+                        docClassLabel = classifiedType.displayName
+
+                        extractedDetails = ocrFields?.details.orEmpty().cleanDetails()
                         aadhaarName = ocrFields?.name?.replace("_", " ")
                         aadhaarDob = ocrFields?.dob
                         aadhaarGender = ocrFields?.gender
@@ -323,6 +446,21 @@ class ScannerViewModel @Inject constructor(
                             anchoredGroupId    = null
                         }
 
+                        // ── Passport pairing ──────────────────────────────
+                        if (classifiedType == DocClassType.PASSPORT) {
+                            passportSide       = if (ocrFields?.hasMrz == true) "FRONT" else "BACK"
+                            passportHolderName = ocrFields?.name
+                            passportNumHashVal = ocrFields?.idNumber?.let { hashPassportNum(it) }
+                            passportGroupId    = resolvePassportGroupId(
+                                passportNumHash = passportNumHashVal,
+                                passportSide    = passportSide!!,
+                                inBatchDocs     = savedPassportDocs,
+                                sessionId       = freshState.sessionId
+                            )
+                        } else {
+                            lastPassportGroupId = null
+                        }
+
                         saveBitmap = maskIfNeeded(classifiedType, originalBitmap)
                     }
 
@@ -347,24 +485,41 @@ class ScannerViewModel @Inject constructor(
 
                     documentRepository.saveDocument(
                         Document(
-                            id             = docId,
-                            folderId       = freshState.targetFolderId,
-                            name           = name,
-                            pageCount      = 1,
-                            thumbnailPath  = imageUri?.toString(),
-                            pdfPath        = null,
-                            docClassLabel  = docClassLabel,
-                            createdAt      = System.currentTimeMillis(),
-                            sessionId      = freshState.sessionId,
-                            aadhaarSide    = aadhaarSide,
-                            aadhaarGroupId = aadhaarGroupId,
-                            aadhaarName = aadhaarName,
-                            aadhaarDob = aadhaarDob,
-                            aadhaarGender = aadhaarGender,
-                            aadhaarMaskedNumber = aadhaarMaskedNumber,
-                            aadhaarAddress = aadhaarAddress
+                            id                   = docId,
+                            folderId             = freshState.targetFolderId,
+                            name                 = name,
+                            pageCount            = 1,
+                            thumbnailPath        = imageUri?.toString(),
+                            pdfPath              = null,
+                            docClassLabel        = docClassLabel,
+                            createdAt            = System.currentTimeMillis(),
+                            sessionId            = freshState.sessionId,
+                            aadhaarSide          = aadhaarSide,
+                            aadhaarGroupId       = aadhaarGroupId,
+                            aadhaarName          = aadhaarName,
+                            aadhaarDob           = aadhaarDob,
+                            aadhaarGender        = aadhaarGender,
+                            aadhaarMaskedNumber  = aadhaarMaskedNumber,
+                            aadhaarAddress       = aadhaarAddress,
+                            extractedDetailsJson = extractedDetails.toDocumentDetailsJson(),
+                            ocrRawText           = null,
+                            passportGroupId      = passportGroupId,
+                            passportSide         = passportSide,
+                            passportHolderName   = passportHolderName,
+                            passportNumHash      = passportNumHashVal,
                         )
                     )
+
+                    if (passportGroupId != null && passportSide != null) {
+                        savedPassportDocs.add(
+                            SavedPassportDocInfo(
+                                documentId = docId,
+                                groupId    = passportGroupId!!,
+                                side       = passportSide!!,
+                                numHash    = passportNumHashVal
+                            )
+                        )
+                    }
 
                     if (aadhaarGroupId != null && aadhaarSide != null) {
                         savedAadhaarDocs.add(
@@ -420,6 +575,24 @@ class ScannerViewModel @Inject constructor(
                     }
                 }
 
+                // ── Passport group reconciliation ─────────────────────────
+                // If two passports with the same number hash were scanned in
+                // the same batch but got different groupIds, unify them.
+                if (savedPassportDocs.size > 1) {
+                    val hashToGroup = mutableMapOf<String, String>()
+                    savedPassportDocs.forEach { info ->
+                        val h = info.numHash ?: return@forEach
+                        if (!hashToGroup.containsKey(h)) hashToGroup[h] = info.groupId
+                    }
+                    savedPassportDocs.forEach { info ->
+                        val h = info.numHash ?: return@forEach
+                        val correct = hashToGroup[h] ?: return@forEach
+                        if (correct != info.groupId) {
+                            documentRepository.updatePassportGroupIdOnly(info.documentId, correct)
+                        }
+                    }
+                }
+
                 // ── Mismatch detection ────────────────────────────────────────
                 val mismatches = savedDocInfos
                     .filter { info ->
@@ -444,10 +617,21 @@ class ScannerViewModel @Inject constructor(
                 Log.d("AadhaarDebug", "mismatches: ${mismatches.size}")
                 Log.d("AadhaarDebug", "═══════════════════")
 
+                val destinationLabel = when {
+                    freshState.targetFolderName.isNotBlank() -> freshState.targetFolderName
+                    freshState.targetDocType != null -> freshState.targetDocType
+                    else -> "All Documents"
+                }
+
                 _state.value = _state.value.copy(
                     isSaving          = false,
                     saveSuccess       = true,
-                    pendingMismatches = mismatches
+                    pendingMismatches = mismatches,
+                    saveFeedback = ScanSaveFeedback(
+                        savedCount = sortedPages.size,
+                        destinationLabel = destinationLabel,
+                        mismatchCount = mismatches.size
+                    )
                 )
 
             } catch (e: Exception) {
@@ -462,11 +646,11 @@ class ScannerViewModel @Inject constructor(
     private suspend fun resolveGroupId(
         bitmap      : Bitmap,
         detected    : DocClassType,
-        ocrFields   : com.example.docscanner.data.ocr.ExtractedFields? = null,
+        ocrFields   : NormalizedOcrFields? = null,
         inBatchDocs : List<SavedAadhaarDocInfo> = emptyList()
     ): String {
 
-        val fields    = ocrFields ?: try { ocrHelper.extractFields(bitmap, detected) }
+        val fields    = ocrFields ?: try { extractNormalizedFields(bitmap, detected) }
         catch (e: Exception) { Log.e("AadhaarDebug", "OCR groupId failed", e); null }
 
         // Raw digits — in-memory only, used to build hashes for lookups, never logged or stored
@@ -492,7 +676,7 @@ class ScannerViewModel @Inject constructor(
 
         // ── Strategy 1: confident key (name + full number, both hashed) ───────
         val confidentKey = if (fields?.name != null && fields.idNumber != null)
-            ocrHelper.buildAadhaarGroupId(fields.name, fields.idNumber)   // returns hashed ID
+            extractionFusion.buildAadhaarGroupId(fields.name, fields.idNumber)   // returns hashed ID
         else null
 
         Log.d("AadhaarDebug", "S1 confidentKey=${confidentKey}")
@@ -639,7 +823,7 @@ class ScannerViewModel @Inject constructor(
 
         // ── Strategy 5 / 6: partial key or timestamp fallback ────────────────
         val partialKey = if (fields != null)
-            ocrHelper.buildAadhaarGroupId(fields.name, fields.idNumber) else null
+            extractionFusion.buildAadhaarGroupId(fields.name, fields.idNumber) else null
         val result = partialKey ?: "aadhaar_grp_${System.currentTimeMillis()}"
         Log.d("AadhaarDebug", "S5/6 LAST RESORT → ${result.take(20)}")
         lastAadhaarGroupId = result
@@ -655,6 +839,102 @@ class ScannerViewModel @Inject constructor(
      */
     private fun isConfidentGroupId(groupId: String): Boolean =
         !groupId.startsWith("ag_n_") && !groupId.startsWith("aadhaar_grp_")
+
+    // ── Passport pairing helpers ──────────────────────────────────────────────
+
+    /**
+     * Hashes a passport number (e.g. "A1234567") using SHA-256.
+     * The raw number is never stored — only the 20-char hex prefix is kept.
+     */
+    private fun hashPassportNum(rawNum: String): String {
+        val normalized = rawNum.filter { it.isLetterOrDigit() }.uppercase()
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(normalized.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }.take(20)
+    }
+
+    /**
+     * Resolves a passport group ID for the current scan.
+     *
+     * Strategy 1: passport number hash matches a doc already in the session → reuse.
+     * Strategy 2: carry-forward the last passport group if it is missing this side.
+     * Strategy 3: new group (timestamp fallback).
+     */
+    /**
+     * Four-strategy passport group resolution — works across sessions.
+     *
+     * S1a – same-batch hash match: front+back scanned together, OCR reads number on both.
+     * S1b – cross-session hash match: hash stored in DB → pairs even days apart.
+     * S2  – carry-forward: consecutive scan in same session (e.g. flip passport).
+     * S2b – unmatched-FRONT finder: back scanned a different day/session when OCR
+     *        can't read the barcode. If there is exactly ONE FRONT page without a
+     *        paired BACK page → it must be this passport.
+     * S3  – new group (fallback).
+     */
+    private suspend fun resolvePassportGroupId(
+        passportNumHash: String?,
+        passportSide: String,
+        inBatchDocs: List<SavedPassportDocInfo>,
+        sessionId: String?,
+    ): String {
+
+        // ── S1a: same-batch hash match ────────────────────────────────────────
+        if (passportNumHash != null) {
+            val batchMatch = inBatchDocs
+                .firstOrNull { it.numHash == passportNumHash && it.side != passportSide }
+                ?.groupId
+            if (batchMatch != null) {
+                lastPassportGroupId = batchMatch
+                return batchMatch
+            }
+        }
+
+        // ── S1b: cross-session hash match (hash persisted in DB) ─────────────
+        if (passportNumHash != null) {
+            val dbDocs = try {
+                documentRepository.getPassportDocsByHash(passportNumHash)
+            } catch (e: Exception) { emptyList() }
+
+            val crossMatch = dbDocs
+                .firstOrNull { it.passportSide != passportSide && it.passportGroupId != null }
+                ?.passportGroupId
+            if (crossMatch != null) {
+                lastPassportGroupId = crossMatch
+                return crossMatch
+            }
+        }
+
+        // ── S2: carry-forward within same scan session ────────────────────────
+        lastPassportGroupId?.let { lastGid ->
+            val groupsMissingThisSide = inBatchDocs
+                .groupBy { it.groupId }
+                .filter { (_, docs) -> docs.none { it.side == passportSide } }
+                .keys
+            if (groupsMissingThisSide.contains(lastGid)) {
+                return lastGid
+            }
+        }
+
+        // ── S2b: unmatched FRONT finder (cross-session, barcode unreadable) ───
+        // If we're scanning a BACK page and there is exactly ONE front page in the
+        // user's library that doesn't have a back page yet, this back page belongs to it.
+        if (passportSide == "BACK") {
+            val unmatchedFronts = try {
+                documentRepository.getUnmatchedFrontPassports(sessionId)
+            } catch (e: Exception) { emptyList() }
+
+            if (unmatchedFronts.size == 1) {
+                val matchedGroupId = unmatchedFronts.first().passportGroupId!!
+                lastPassportGroupId = matchedGroupId
+                return matchedGroupId
+            }
+        }
+
+        // ── S3: new group ─────────────────────────────────────────────────────
+        val newGroup = "pp_grp_${System.currentTimeMillis()}"
+        lastPassportGroupId = newGroup
+        return newGroup
+    }
 
     private fun normalizeForMismatch(label: String): String = when (label) {
         "Aadhaar Front", "Aadhaar Back" -> "Aadhaar"
@@ -715,21 +995,70 @@ class ScannerViewModel @Inject constructor(
         _state.value = _state.value.copy(saveSuccess = false)
     }
 
-    fun onReset(keepTarget: Boolean = false) {
+    fun clearSaveFeedback() {
+        _state.value = _state.value.copy(saveFeedback = null)
+    }
+
+    fun onReset(keepTarget: Boolean = false, keepFeedback: Boolean = false) {
         synchronized(cropJobLock) { pendingCropJobs.clear() }
+        val savedFeedback = if (keepFeedback) _state.value.saveFeedback else null
         _state.value = if (keepTarget) {
             ScannerState(
                 sessionId        = _state.value.sessionId,
                 targetFolderId   = _state.value.targetFolderId,
                 targetFolderName = _state.value.targetFolderName,
                 targetExportType = _state.value.targetExportType,
-                targetDocType    = _state.value.targetDocType
+                targetDocType    = _state.value.targetDocType,
+                saveFeedback     = savedFeedback
             )
         } else {
-            ScannerState(sessionId = _state.value.sessionId)
+            ScannerState(
+                sessionId = _state.value.sessionId,
+                saveFeedback = savedFeedback
+            )
         }
-        lastAadhaarGroupId = null
-        anchoredGroupId    = null
+        lastAadhaarGroupId  = null
+        anchoredGroupId     = null
+        lastPassportGroupId = null
+    }
+
+    private suspend fun uriToBitmap(uri: Uri): Bitmap? = withContext(Dispatchers.IO) {
+        try {
+            appContext.contentResolver.openInputStream(uri)?.use { stream ->
+                val bitmap = BitmapFactory.decodeStream(stream) ?: return@withContext null
+                val exif = androidx.exifinterface.media.ExifInterface(
+                    appContext.contentResolver.openInputStream(uri) ?: return@withContext bitmap
+                )
+                val rotation = when (
+                    exif.getAttributeInt(
+                        androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+                        androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL
+                    )
+                ) {
+                    androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90  -> 90f
+                    androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+
+                if (rotation != 0f) {
+                    Bitmap.createBitmap(
+                        bitmap,
+                        0,
+                        0,
+                        bitmap.width,
+                        bitmap.height,
+                        Matrix().apply { postRotate(rotation) },
+                        true
+                    )
+                } else {
+                    bitmap
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("ScannerVM", "Failed to decode imported page: $uri", e)
+            null
+        }
     }
 
     private fun updatePage(pageId: String, transform: (ScannedPage) -> ScannedPage) {
@@ -740,6 +1069,92 @@ class ScannerViewModel @Inject constructor(
         )
     }
 
+    private fun List<DocumentDetail>.cleanDetails(): List<DocumentDetail> {
+        val usedLabels = mutableSetOf<String>()
+        return mapNotNull { detail ->
+            val label = detail.label.trim()
+            val value = detail.value.trim()
+            if (label.isEmpty() || value.isEmpty()) return@mapNotNull null
+            if (!usedLabels.add(label.lowercase())) return@mapNotNull null
+            detail.copy(label = label, value = value)
+        }
+    }
+
+    private suspend fun extractNormalizedFields(
+        bitmap: Bitmap,
+        docType: DocClassType
+    ): NormalizedOcrFields {
+        val extracted = extractionFusion.extract(bitmap, docType)
+        return extracted.toNormalizedFields()
+    }
+
+    private fun ExtractedFields.toNormalizedFields(): NormalizedOcrFields = when (this) {
+        is ExtractedFields.AadhaarFront -> NormalizedOcrFields(
+            name = name,
+            idNumber = idNumber,
+            dob = dob,
+            gender = gender,
+            address = null,
+            rawText = rawText,
+            details = details
+        )
+        is ExtractedFields.AadhaarBack -> NormalizedOcrFields(
+            name = null,
+            idNumber = idNumber,
+            dob = null,
+            gender = null,
+            address = address,
+            rawText = rawText,
+            details = details
+        )
+        is ExtractedFields.Pan -> NormalizedOcrFields(
+            name = name,
+            idNumber = idNumber,
+            dob = dob,
+            gender = null,
+            address = null,
+            rawText = rawText,
+            details = details
+        )
+        is ExtractedFields.Passport -> NormalizedOcrFields(
+            name = name,
+            idNumber = idNumber,
+            dob = dob,
+            gender = gender,
+            address = null,
+            rawText = rawText,
+            details = details,
+            hasMrz = mrzLines.isNotEmpty()
+        )
+        is ExtractedFields.VoterId -> NormalizedOcrFields(
+            name = name,
+            idNumber = idNumber,
+            dob = dob ?: age,
+            gender = gender,
+            address = address,
+            rawText = rawText,
+            details = details
+        )
+        is ExtractedFields.DrivingLicence -> NormalizedOcrFields(
+            name = name,
+            idNumber = idNumber,
+            dob = dob,
+            gender = gender,
+            address = address,
+            rawText = rawText,
+            details = details
+        )
+        is ExtractedFields.Unknown -> NormalizedOcrFields(
+            name = null,
+            idNumber = null,
+            dob = null,
+            gender = null,
+            address = null,
+            rawText = rawText,
+            details = details
+        )
+    }
+
     // ── Private data classes ──────────────────────────────────────────────────
 
     private data class SavedDocInfo(
@@ -747,6 +1162,24 @@ class ScannerViewModel @Inject constructor(
         val documentName  : String,
         val detectedLabel : String?,
         val folderLabel   : String?
+    )
+
+    private data class NormalizedOcrFields(
+        val name: String?,
+        val idNumber: String?,
+        val dob: String?,
+        val gender: String?,
+        val address: String?,
+        val rawText: String,
+        val details: List<DocumentDetail>,
+        val hasMrz: Boolean = false,   // true = passport data page (FRONT)
+    )
+
+    private data class SavedPassportDocInfo(
+        val documentId : String,
+        val groupId    : String,
+        val side       : String,   // "FRONT" | "BACK"
+        val numHash    : String?,  // SHA-256 hash of passport number (null if OCR missed it)
     )
 
     /**
@@ -772,5 +1205,6 @@ data class ScannerState(
     val targetExportType  : FolderExportType      = FolderExportType.PDF,
     val targetDocType     : String?               = null,
     val sessionId         : String?               = null,
-    val pendingMismatches : List<ScannedMismatch> = emptyList()
+    val pendingMismatches : List<ScannedMismatch> = emptyList(),
+    val saveFeedback      : ScanSaveFeedback?     = null
 )
