@@ -138,6 +138,15 @@ interface DocumentDao {
     """)
     suspend fun getExistingPassportDocs(sessionId: String): List<DocumentEntity>
 
+    /** All passport docs across every session that already belong to a group. */
+    @Query("""
+        SELECT * FROM documents
+        WHERE docClassLabel = 'Passport'
+        AND passportGroupId IS NOT NULL
+        AND isMergedSource = 0
+    """)
+    suspend fun getAllPassportDocsWithGroup(): List<DocumentEntity>
+
     @Query("""
         SELECT * FROM documents
         WHERE sessionId IS NULL

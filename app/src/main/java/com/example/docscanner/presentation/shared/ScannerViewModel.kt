@@ -357,8 +357,7 @@ class ScannerViewModel @Inject constructor(
                             passportGroupId    = resolvePassportGroupId(
                                 passportNumHash = passportNumHashVal,
                                 passportSide    = passportSide!!,
-                                inBatchDocs     = savedPassportDocs,
-                                sessionId       = freshState.sessionId
+                                inBatchDocs     = savedPassportDocs
                             )
                         }
 
@@ -454,8 +453,7 @@ class ScannerViewModel @Inject constructor(
                             passportGroupId    = resolvePassportGroupId(
                                 passportNumHash = passportNumHashVal,
                                 passportSide    = passportSide!!,
-                                inBatchDocs     = savedPassportDocs,
-                                sessionId       = freshState.sessionId
+                                inBatchDocs     = savedPassportDocs
                             )
                         } else {
                             lastPassportGroupId = null
@@ -875,7 +873,6 @@ class ScannerViewModel @Inject constructor(
         passportNumHash: String?,
         passportSide: String,
         inBatchDocs: List<SavedPassportDocInfo>,
-        sessionId: String?,
     ): String {
 
         // ── S1a: same-batch hash match ────────────────────────────────────────
@@ -915,19 +912,19 @@ class ScannerViewModel @Inject constructor(
             }
         }
 
-        // ── S2b: unmatched FRONT finder (cross-session, barcode unreadable) ───
-        // If we're scanning a BACK page and there is exactly ONE front page in the
-        // user's library that doesn't have a back page yet, this back page belongs to it.
-        if (passportSide == "BACK") {
-            val unmatchedFronts = try {
-                documentRepository.getUnmatchedFrontPassports(sessionId)
-            } catch (e: Exception) { emptyList() }
+        // ── S2b: unmatched opposite-side finder (cross-session) ─────────────
+        // If there is exactly ONE page of the opposite side that has no match yet,
+        // this page must belong to it.  Works for both FRONT-then-BACK and BACK-then-FRONT.
+        // Searches globally across all sessions so "front today / back tomorrow" is handled.
+        val oppositeSide = if (passportSide == "FRONT") "BACK" else "FRONT"
+        val unmatchedOpposite = try {
+            documentRepository.getUnmatchedPassportsBySide(oppositeSide)
+        } catch (e: Exception) { emptyList() }
 
-            if (unmatchedFronts.size == 1) {
-                val matchedGroupId = unmatchedFronts.first().passportGroupId!!
-                lastPassportGroupId = matchedGroupId
-                return matchedGroupId
-            }
+        if (unmatchedOpposite.size == 1) {
+            val matchedGroupId = unmatchedOpposite.first().passportGroupId!!
+            lastPassportGroupId = matchedGroupId
+            return matchedGroupId
         }
 
         // ── S3: new group ─────────────────────────────────────────────────────

@@ -232,6 +232,33 @@ class AllDocumentsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Tries to auto-pair [docId] with an existing unmatched passport page.
+     * Priority: same passport-number hash → only remaining unpaired candidate.
+     */
+    private suspend fun tryAutoPairPassport(docId: String) {
+        val doc = documents.value.firstOrNull { it.id == docId } ?: return
+        val candidates = documents.value.filter {
+            it.id != docId && it.docClassLabel == "Passport" && it.passportGroupId == null
+        }
+        if (candidates.isEmpty()) return
+
+        val match = if (doc.passportNumHash != null)
+            candidates.firstOrNull { it.passportNumHash == doc.passportNumHash }
+                ?: if (candidates.size == 1) candidates.first() else null
+        else if (candidates.size == 1) candidates.first()
+        else null
+
+        if (match != null) manuallyGroupPassport(docId, match.id)
+    }
+
+    /** SHA-256 hash of a normalised passport number (first 10 hex chars). */
+    private fun hashPassportNum(raw: String): String {
+        val num   = raw.trim().uppercase().filter { it.isLetterOrDigit() }
+        val bytes = java.security.MessageDigest.getInstance("SHA-256").digest(num.toByteArray())
+        return bytes.take(10).joinToString("") { "%02x".format(it) }
+    }
+
     fun ungroupPassport(group: PassportGroup) {
         viewModelScope.launch {
             listOfNotNull(group.frontDoc, group.backDoc).forEach { doc ->
@@ -465,6 +492,11 @@ class AllDocumentsViewModel @Inject constructor(
                 if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card")
                     applyMaskingIfNeeded(document, newLabel)
             }
+            // If the user just labelled this document as Passport, try to find
+            // an existing unmatched passport page and pair them automatically.
+            if (newLabel == "Passport" && document.passportGroupId == null) {
+                tryAutoPairPassport(document.id)
+            }
         }
     }
 
@@ -580,6 +612,11 @@ class AllDocumentsViewModel @Inject constructor(
                     ?.takeLast(4)
                     ?.takeIf { it.length == 4 }
                     ?.let { "xxxx xxxx $it" }
+            )
+            is ExtractedFields.Passport -> base.copy(
+                passportSide    = if (fields.mrzLines.isNotEmpty()) "FRONT" else "BACK",
+                passportNumHash = fields.idNumber?.let { hashPassportNum(it) },
+                passportHolderName = fields.name
             )
             else -> base
         }

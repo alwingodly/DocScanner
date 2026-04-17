@@ -429,6 +429,18 @@ fun DocScannerNavHost(
                         allDocsViewModel.ungroupAadhaar(it)
                         navController.popBackStack()
                     }
+                },
+                onPairPassport = { _ ->
+                    // Navigate back to AllDocuments; the pending-pair toast is shown in the viewer.
+                    navController.popBackStack()
+                },
+                onUngroupPassport = { doc ->
+                    val group = allDocsViewModel.passportGroups.value
+                        .firstOrNull { it.groupId == doc.passportGroupId }
+                    group?.let {
+                        allDocsViewModel.ungroupPassport(it)
+                        navController.popBackStack()
+                    }
                 }
             )
         }

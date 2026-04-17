@@ -145,8 +145,9 @@ fun AllDocumentsScreen(
     var showGroupNameDialog by remember { mutableStateOf(false) }
     var pendingGroupDocIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var groupNameText by remember { mutableStateOf("") }
-    var contextAadhaarGroupId   by remember { mutableStateOf<String?>(null) }
-    var contextPassportGroupId  by remember { mutableStateOf<String?>(null) }
+    var contextAadhaarGroupId    by remember { mutableStateOf<String?>(null) }
+    var contextPassportGroupId   by remember { mutableStateOf<String?>(null) }
+    var pendingPassportPairId    by remember { mutableStateOf<String?>(null) }
 
 
     val contextAadhaarGroup = remember(contextDoc, aadhaarGroups) {
@@ -298,6 +299,8 @@ fun AllDocumentsScreen(
                 onPassportGroupMoreTap = { groupId -> contextPassportGroupId = groupId },
                 pendingAadhaarPairId = pendingAadhaarPairId,
                 onPendingAadhaarPairChange = { pendingAadhaarPairId = it },
+                pendingPassportPairId = pendingPassportPairId,
+                onPendingPassportPairChange = { pendingPassportPairId = it },
                 groupingScopeIds = groupingScopeIds,
             )
         }
@@ -651,6 +654,7 @@ fun AllDocumentsScreen(
         val doc          = contextDoc!!
         val currentLabel = doc.docClassLabel ?: "Other"
         val isAadhaar    = currentLabel.startsWith("Aadhaar")
+        val isPassport   = currentLabel == "Passport"
         val isInGroup    = doc.docGroupId != null
         val isGroupedAadhaar = doc.aadhaarGroupId != null
 
@@ -798,8 +802,60 @@ fun AllDocumentsScreen(
                     }
                 }
 
-                // ── Group actions (non-Aadhaar only) ──────────────────────────
-                if (!isAadhaar) {
+                // ── Passport pairing (unpaired passport docs only) ─────────────
+                if (currentLabel == "Passport" && doc.passportGroupId == null) {
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp))
+
+                    val isPendingPassportSource = pendingPassportPairId == doc.id
+                    val hasPendingPassportOther = pendingPassportPairId != null && pendingPassportPairId != doc.id
+
+                    ContextAction(
+                        icon  = if (isPendingPassportSource) Icons.Default.Close else Icons.Default.Link,
+                        label = when {
+                            isPendingPassportSource -> "Cancel pairing"
+                            hasPendingPassportOther -> "Pair with selected passport"
+                            else                    -> "Pair with another passport"
+                        },
+                        color = if (isPendingPassportSource) InkMid else Color(0xFF7C3AED)
+                    ) {
+                        when {
+                            isPendingPassportSource -> {
+                                pendingPassportPairId = null
+                                Toast.makeText(context, "Passport pairing cancelled", Toast.LENGTH_SHORT).show()
+                            }
+                            hasPendingPassportOther -> {
+                                viewModel.manuallyGroupPassport(pendingPassportPairId!!, doc.id)
+                                pendingPassportPairId = null
+                                Toast.makeText(context, "Passport pages paired", Toast.LENGTH_SHORT).show()
+                            }
+                            else -> {
+                                pendingPassportPairId = doc.id
+                                Toast.makeText(context, "Now tap another passport page to pair", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        contextDoc = null
+                    }
+                }
+                // Ungroup for already-paired passports
+                if (currentLabel == "Passport" && doc.passportGroupId != null) {
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp))
+                    val ppGroup = passportGroups.firstOrNull { it.groupId == doc.passportGroupId }
+                    ContextAction(
+                        icon  = Icons.Default.LinkOff,
+                        label = "Ungroup passport pair",
+                        color = InkMid
+                    ) {
+                        ppGroup?.let { viewModel.ungroupPassport(it) }
+                        Toast.makeText(context, "Passport pair ungrouped", Toast.LENGTH_SHORT).show()
+                        contextDoc = null
+                    }
+                }
+
+                // ── Group actions (non-Aadhaar, non-Passport only) ────────────
+                // Passport docs use passport pairing (above), not generic groups.
+                if (!isAadhaar && !isPassport) {
                     HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
                         modifier = Modifier.padding(horizontal = 20.dp))
 
@@ -1926,6 +1982,8 @@ private fun GallerySectionedGrid(
     onPassportGroupMoreTap: (groupId: String) -> Unit = {},
     pendingAadhaarPairId: String? = null,
     onPendingAadhaarPairChange: (String?) -> Unit = {},
+    pendingPassportPairId: String? = null,
+    onPendingPassportPairChange: (String?) -> Unit = {},
     groupingScopeIds: Set<String>? = null
 ) {
     val folderByName = remember(allFolders) { allFolders.associateBy { it.name } }
@@ -2035,6 +2093,8 @@ private fun GallerySectionedGrid(
                             onPassportGroupMoreTap = onPassportGroupMoreTap,
                             onManualPassportGroup = onManualPassportGroup,
                             onGroupTap      = onGroupTap,
+                            pendingPassportPairId      = pendingPassportPairId,
+                            onPendingPassportPairChange = onPendingPassportPairChange,
                             selectionEnabled = sectionSelectionEnabled,
                         )
                     } else {
@@ -2056,8 +2116,11 @@ private fun GallerySectionedGrid(
                             docGroupNames   = docGroupNames,
                             onManualGroup   = onManualGroup,
                             onAddToGroup    = onAddToGroup,
-                            pendingAadhaarPairId = pendingAadhaarPairId,
+                            onManualPassportGroup      = onManualPassportGroup,
+                            pendingAadhaarPairId       = pendingAadhaarPairId,
                             onPendingAadhaarPairChange = onPendingAadhaarPairChange,
+                            pendingPassportPairId       = pendingPassportPairId,
+                            onPendingPassportPairChange = onPendingPassportPairChange,
                             selectionEnabled = sectionSelectionEnabled,
                         )
                     }
@@ -2213,6 +2276,8 @@ private fun GalleryPhotoGrid(
     onAddToGroup: (docId: String, groupId: String, side: String) -> Unit = { _, _, _ -> },
     pendingAadhaarPairId: String? = null,
     onPendingAadhaarPairChange: (String?) -> Unit = {},
+    pendingPassportPairId: String? = null,
+    onPendingPassportPairChange: (String?) -> Unit = {},
     selectionEnabled: Boolean = true,
 ) {
     val context = LocalContext.current
@@ -2285,6 +2350,9 @@ private fun GalleryPhotoGrid(
                         val isUngroupedAadhaar = remember(doc.docClassLabel, doc.aadhaarGroupId) {
                             doc.docClassLabel?.startsWith("Aadhaar") == true && doc.aadhaarGroupId == null
                         }
+                        val isUngroupedPassport = remember(doc.docClassLabel, doc.passportGroupId) {
+                            doc.docClassLabel == "Passport" && doc.passportGroupId == null
+                        }
                         val aadhaarGroup = remember(doc.aadhaarGroupId, aadhaarGroupsById) {
                             doc.aadhaarGroupId?.let { aadhaarGroupsById[it] }
                         }
@@ -2310,7 +2378,7 @@ private fun GalleryPhotoGrid(
                                     this.translationY = ty
                                 }
                                 .then(
-                                    if (isUngroupedAadhaar) Modifier else Modifier.pointerInput(doc.id) {
+                                    if (isUngroupedAadhaar || isUngroupedPassport) Modifier else Modifier.pointerInput(doc.id) {
                                         detectDragGesturesAfterLongPress(
                                             onDragStart = { dragState = DragState(idx = docIdx) },
                                             onDrag = { change, amount ->
@@ -2379,9 +2447,30 @@ private fun GalleryPhotoGrid(
                             } else if (passportGroup != null) {
                                 PassportGroupedTile(
                                     group = passportGroup,
+                                    isPendingFill = selectionEnabled &&
+                                        pendingPassportPairId != null &&
+                                        !passportGroup.isComplete,
                                     onTap = {
                                         if (isSelectMode && !selectionEnabled) return@PassportGroupedTile
-                                        onGroupTap(passportGroup.groupId)
+                                        val pendingId = pendingPassportPairId
+                                        val existingDoc = passportGroup.frontDoc ?: passportGroup.backDoc
+                                        if (pendingId != null && !passportGroup.isComplete && existingDoc != null) {
+                                            onManualPassportGroup(pendingId, existingDoc.id)
+                                            Toast.makeText(context, "Passport pages paired", Toast.LENGTH_SHORT).show()
+                                            onPendingPassportPairChange(null)
+                                        } else {
+                                            onGroupTap(passportGroup.groupId)
+                                        }
+                                    },
+                                    onLongPress = {
+                                        if (isSelectMode && !selectionEnabled) return@PassportGroupedTile
+                                        if (!passportGroup.isComplete) {
+                                            val existingDoc = passportGroup.frontDoc ?: passportGroup.backDoc
+                                            if (existingDoc != null) {
+                                                onPendingPassportPairChange(existingDoc.id)
+                                                Toast.makeText(context, "Now tap another passport page to pair", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
                                     },
                                     onMoreTap = {
                                         if (isSelectMode && !selectionEnabled) return@PassportGroupedTile
@@ -2404,14 +2493,13 @@ private fun GalleryPhotoGrid(
                             } else {
                                 GalleryTile(
                                     doc        = doc,
-                                    isPendingAadhaarPair = selectionEnabled && doc.id == pendingAadhaarPairId,
+                                    isPendingAadhaarPair   = selectionEnabled && doc.id == pendingAadhaarPairId,
+                                    isPendingPassportPair  = selectionEnabled && doc.id == pendingPassportPairId,
                                     onTap      = {
                                         if (isSelectMode && !selectionEnabled) return@GalleryTile
-                                        if (isUngroupedAadhaar) {
-                                            when {
-                                                pendingAadhaarPairId == doc.id -> {
-                                                    onPendingAadhaarPairChange(null)
-                                                }
+                                        when {
+                                            isUngroupedAadhaar -> when {
+                                                pendingAadhaarPairId == doc.id -> onPendingAadhaarPairChange(null)
                                                 pendingAadhaarPairId != null -> {
                                                     onManualGroup(pendingAadhaarPairId!!, doc.id)
                                                     Toast.makeText(context, "Aadhaar cards paired", Toast.LENGTH_SHORT).show()
@@ -2419,15 +2507,29 @@ private fun GalleryPhotoGrid(
                                                 }
                                                 else -> onDocumentClick(doc)
                                             }
-                                        } else {
-                                            onDocumentClick(doc)
+                                            isUngroupedPassport -> when {
+                                                pendingPassportPairId == doc.id -> onPendingPassportPairChange(null)
+                                                pendingPassportPairId != null -> {
+                                                    onManualPassportGroup(pendingPassportPairId!!, doc.id)
+                                                    Toast.makeText(context, "Passport pages paired", Toast.LENGTH_SHORT).show()
+                                                    onPendingPassportPairChange(null)
+                                                }
+                                                else -> onDocumentClick(doc)
+                                            }
+                                            else -> onDocumentClick(doc)
                                         }
                                     },
                                     onLongPress = {
                                         if (isSelectMode && !selectionEnabled) return@GalleryTile
-                                        if (isUngroupedAadhaar) {
-                                            onPendingAadhaarPairChange(doc.id)
-                                            Toast.makeText(context, "Now tap another Aadhaar to pair", Toast.LENGTH_SHORT).show()
+                                        when {
+                                            isUngroupedAadhaar -> {
+                                                onPendingAadhaarPairChange(doc.id)
+                                                Toast.makeText(context, "Now tap another Aadhaar to pair", Toast.LENGTH_SHORT).show()
+                                            }
+                                            isUngroupedPassport -> {
+                                                onPendingPassportPairChange(doc.id)
+                                                Toast.makeText(context, "Now tap another passport page to pair", Toast.LENGTH_SHORT).show()
+                                            }
                                         }
                                     },
                                     onBadgeTap = {
@@ -2584,7 +2686,9 @@ private fun AadhaarHalfTile(
 @Composable
 private fun PassportGroupedTile(
     group: com.example.docscanner.domain.model.PassportGroup,
+    isPendingFill: Boolean = false,
     onTap: () -> Unit,
+    onLongPress: () -> Unit = {},
     onMoreTap: () -> Unit,
 ) {
     val ppViolet = Color(0xFF7C3AED)
@@ -2595,11 +2699,21 @@ private fun PassportGroupedTile(
             .aspectRatio(1f)
             .clip(RoundedCornerShape(4.dp))
             .background(BgSurface)
-            .clickable(onClick = onTap)
+            .combinedClickable(onClick = onTap, onLongClick = onLongPress)
     ) {
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             PassportHalfTile(doc = group.frontDoc, label = "Data Page",  modifier = Modifier.weight(1f))
             PassportHalfTile(doc = group.backDoc,  label = "Back Page",  modifier = Modifier.weight(1f))
+        }
+
+        // Pending-pair glow (shown when this is the source tile or the target for completion)
+        if (isPendingFill) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(ppViolet.copy(alpha = 0.18f))
+                    .border(2.dp, ppViolet, RoundedCornerShape(4.dp))
+            )
         }
 
         Box(
@@ -2702,6 +2816,7 @@ private fun PassportHalfTile(
 private fun GalleryTile(
     doc: Document,
     isPendingAadhaarPair: Boolean = false,
+    isPendingPassportPair: Boolean = false,
     modifier: Modifier = Modifier,
     onTap: () -> Unit,
     onLongPress: () -> Unit = {},
@@ -2741,6 +2856,14 @@ private fun GalleryTile(
                     .fillMaxSize()
                     .background(Coral.copy(alpha = 0.16f))
                     .border(2.dp, Coral, RoundedCornerShape(4.dp))
+            )
+        }
+        if (isPendingPassportPair) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF7C3AED).copy(alpha = 0.16f))
+                    .border(2.dp, Color(0xFF7C3AED), RoundedCornerShape(4.dp))
             )
         }
 

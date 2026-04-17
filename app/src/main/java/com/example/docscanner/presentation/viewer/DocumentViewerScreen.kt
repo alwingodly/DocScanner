@@ -1,6 +1,7 @@
 package com.example.docscanner.presentation.viewer
 
 import android.content.ClipData
+import android.widget.Toast
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
@@ -20,6 +21,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -70,6 +75,7 @@ import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Label
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
@@ -160,7 +166,9 @@ fun DocumentViewerScreen(
     onUnmerge            : ((Document) -> Unit)?          = null,
     onRenameAadhaarPair  : ((Document, String) -> Unit)?  = null,
     onUngroupAadhaarPair : ((Document) -> Unit)?          = null,
-    onEditDetails        : ((Document) -> Unit)?          = null   // ← NEW
+    onPairPassport       : ((Document) -> Unit)?          = null,
+    onUngroupPassport    : ((Document) -> Unit)?          = null,
+    onEditDetails        : ((Document) -> Unit)?          = null
 ) {
     val context  = LocalContext.current
     val scope    = rememberCoroutineScope()
@@ -174,8 +182,17 @@ fun DocumentViewerScreen(
         initialPage = initialIndex.coerceIn(0, galleryDocs.lastIndex.coerceAtLeast(0)),
         pageCount   = { galleryDocs.size.coerceAtLeast(1) }
     )
+
+    // Tracks the zoom level of whichever page is currently visible.
+    // Reset to 1 whenever the user swipes to a different page so the
+    // pager stays scrollable when viewing the next page at normal scale.
+    var pageScale by remember { mutableFloatStateOf(1f) }
+    LaunchedEffect(pagerState.currentPage) { pageScale = 1f }
+
     val currentDoc           = galleryDocs.getOrNull(pagerState.currentPage) ?: document
-    val isAadhaarGroupedDoc  = currentDoc?.aadhaarGroupId != null
+    val isAadhaarGroupedDoc   = currentDoc?.aadhaarGroupId != null
+    val isPassportDoc         = currentDoc?.docClassLabel == "Passport"
+    val isPassportPaired      = currentDoc?.passportGroupId != null
     val currentDocumentType  = currentDoc?.let {
         if (it.pdfPath != null) DocumentType.PDF else DocumentType.IMAGE
     } ?: documentType
@@ -447,9 +464,13 @@ fun DocumentViewerScreen(
                             .background(Color(0xFF111111))
                     ) {
                         if (galleryDocs.size > 1) {
-                            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                            HorizontalPager(
+                                state             = pagerState,
+                                modifier          = Modifier.fillMaxSize(),
+                                userScrollEnabled = pageScale <= 1.01f
+                            ) { page ->
                                 val pageUri = galleryDocs.getOrNull(page)?.thumbnailPath?.let(Uri::parse) ?: currentUri
-                                GalleryPagerImage(uri = pageUri)
+                                ZoomablePagerImage(uri = pageUri, onScaleChange = { pageScale = it })
                             }
                             if (!isImageExpanded) PageBadge(
                                 current  = pagerState.currentPage + 1,
@@ -704,9 +725,13 @@ fun DocumentViewerScreen(
                         }
 
                         currentDocumentType == DocumentType.IMAGE && galleryDocs.size > 1 -> {
-                            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                            HorizontalPager(
+                                state             = pagerState,
+                                modifier          = Modifier.fillMaxSize(),
+                                userScrollEnabled = pageScale <= 1.01f
+                            ) { page ->
                                 val pageUri = galleryDocs.getOrNull(page)?.thumbnailPath?.let(Uri::parse) ?: currentUri
-                                GalleryPagerImage(uri = pageUri)
+                                ZoomablePagerImage(uri = pageUri, onScaleChange = { pageScale = it })
                             }
                             PageBadge(
                                 pagerState.currentPage + 1, galleryDocs.size,
@@ -897,6 +922,23 @@ fun DocumentViewerScreen(
                         showMoreMenu = false; onUngroupAadhaarPair(currentDoc)
                     }
                 }
+
+                // ── Passport pair / ungroup ────────────────────────────────
+                if (isPassportDoc && !isPassportPaired && onPairPassport != null) {
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 20.dp))
+                    ContextAction(icon = Icons.Default.Link, label = "Pair with another passport", color = Color(0xFF7C3AED)) {
+                        showMoreMenu = false
+                        Toast.makeText(context, "Now long-press another passport page to pair", Toast.LENGTH_LONG).show()
+                        onPairPassport(currentDoc)
+                    }
+                }
+                if (isPassportDoc && isPassportPaired && onUngroupPassport != null) {
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 20.dp))
+                    ContextAction(icon = Icons.Default.LinkOff, label = "Ungroup passport pair", color = InkMid) {
+                        showMoreMenu = false; onUngroupPassport(currentDoc)
+                    }
+                }
+
                 if (currentDoc.isMergedPdf && onUnmerge != null) {
                     HorizontalDivider(color = StrokeLight, thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 20.dp))
                     ContextAction(icon = Icons.AutoMirrored.Filled.CallSplit, label = "Unmerge", color = Color(0xFFE6A23C)) {
@@ -1339,13 +1381,107 @@ private fun ZoomableImage(uri: Uri) {
     }
 }
 
+/**
+ * A page composable for use inside [HorizontalPager] that supports
+ * pinch-to-zoom and double-tap zoom without conflicting with the pager's
+ * horizontal swipe gesture.
+ *
+ * Conflict resolution strategy (using [awaitEachGesture]):
+ *  - 2+ fingers (pinch)         → consume events, handle zoom/pan
+ *  - 1 finger  + scale > 1      → consume events, pan the zoomed image
+ *  - 1 finger  + scale == 1     → do NOT consume, let HorizontalPager swipe
+ *
+ * [onScaleChange] lets the parent set [HorizontalPager.userScrollEnabled]
+ * to false while the image is zoomed in, providing an extra safety net.
+ */
 @Composable
-private fun GalleryPagerImage(uri: Uri) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+private fun ZoomablePagerImage(uri: Uri, onScaleChange: (Float) -> Unit = {}) {
+    var scale  by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            // Double-tap: toggle 1× ↔ 2.5×
+            .pointerInput(Unit) {
+                detectTapGestures(onDoubleTap = {
+                    if (scale > 1.1f) {
+                        scale = 1f; offset = Offset.Zero; onScaleChange(1f)
+                    } else {
+                        scale = 2.5f; onScaleChange(2.5f)
+                    }
+                })
+            }
+            // Pinch-to-zoom + pan — only consumes when needed
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event        = awaitPointerEvent()
+                        val pointerCount = event.changes.count { it.pressed }
+                        val zoom         = event.calculateZoom()
+                        val pan          = event.calculatePan()
+                        val cur          = scale
+
+                        when {
+                            pointerCount >= 2 -> {
+                                // Pinch: update zoom, pan during pinch
+                                val ns = (cur * zoom).coerceIn(1f, 5f)
+                                scale = ns
+                                onScaleChange(ns)
+                                if (ns > 1f) {
+                                    val mx = (size.width  * (ns - 1f)) / 2f
+                                    val my = (size.height * (ns - 1f)) / 2f
+                                    offset = Offset(
+                                        (offset.x + pan.x).coerceIn(-mx, mx),
+                                        (offset.y + pan.y).coerceIn(-my, my)
+                                    )
+                                } else {
+                                    offset = Offset.Zero
+                                    onScaleChange(1f)
+                                }
+                                event.changes.forEach { it.consume() }
+                            }
+                            pointerCount == 1 && cur > 1f -> {
+                                // Single-finger pan while zoomed in
+                                val mx = (size.width  * (cur - 1f)) / 2f
+                                val my = (size.height * (cur - 1f)) / 2f
+                                offset = Offset(
+                                    (offset.x + pan.x).coerceIn(-mx, mx),
+                                    (offset.y + pan.y).coerceIn(-my, my)
+                                )
+                                event.changes.forEach { it.consume() }
+                            }
+                            // Single-finger + scale == 1: don't consume →
+                            // HorizontalPager receives the swipe normally.
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
         AsyncImage(
-            model = uri, contentDescription = null,
-            contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()
+            model              = uri,
+            contentDescription = null,
+            contentScale       = ContentScale.Fit,
+            modifier           = Modifier
+                .fillMaxSize()
+                .graphicsLayer(
+                    scaleX       = scale,
+                    scaleY       = scale,
+                    translationX = offset.x,
+                    translationY = offset.y
+                )
         )
+        if (scale > 1.05f) Box(
+            Modifier
+                .align(Alignment.BottomStart)
+                .padding(12.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(BgCard)
+                .border(1.dp, StrokeLight, RoundedCornerShape(8.dp))
+                .padding(horizontal = 10.dp, vertical = 5.dp)
+        ) { Text("${(scale * 100).toInt()}%", color = InkMid, fontSize = 12.sp) }
     }
 }
 

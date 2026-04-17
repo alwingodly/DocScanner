@@ -147,21 +147,27 @@ class DocumentRepository @Inject constructor(
             documentDao.getUnpairedGlobalPassportDocs().map { it.toDomain() }
 
 
-    /** All FRONT-side passports (has group, no back yet) in session/global scope. */
-    suspend fun getUnmatchedFrontPassports(sessionId: String?): List<Document> {
-        val all = if (sessionId != null)
-            documentDao.getExistingPassportDocs(sessionId).map { it.toDomain() }
-        else
-            documentDao.getGlobalPassportDocs().map { it.toDomain() }
+    /**
+     * All passport pages of [side] ("FRONT" or "BACK") that are in a group but have no
+     * matching page of the opposite side yet.  Searches ALL sessions so cross-session pairing
+     * (e.g. front scanned today, back tomorrow) works correctly.
+     */
+    suspend fun getUnmatchedPassportsBySide(side: String): List<Document> {
+        val all = documentDao.getAllPassportDocsWithGroup().map { it.toDomain() }
 
-        val frontGroupIds = all.filter { it.passportSide == "FRONT" && it.passportGroupId != null }
+        val sideGroupIds     = all.filter { it.passportSide == side }
             .map { it.passportGroupId!! }.toSet()
-        val backGroupIds  = all.filter { it.passportSide == "BACK"  && it.passportGroupId != null }
+        val oppositeSide     = if (side == "FRONT") "BACK" else "FRONT"
+        val oppositeGroupIds = all.filter { it.passportSide == oppositeSide }
             .map { it.passportGroupId!! }.toSet()
-        val unmatchedGroupIds = frontGroupIds - backGroupIds
+        val unmatchedGroupIds = sideGroupIds - oppositeGroupIds
 
-        return all.filter { it.passportGroupId in unmatchedGroupIds && it.passportSide == "FRONT" }
+        return all.filter { it.passportGroupId in unmatchedGroupIds && it.passportSide == side }
     }
+
+    /** Legacy alias kept for any existing call-sites. */
+    suspend fun getUnmatchedFrontPassports(sessionId: String?): List<Document> =
+        getUnmatchedPassportsBySide("FRONT")
 }
 
 // ── Mappers ───────────────────────────────────────────────────────────────────
