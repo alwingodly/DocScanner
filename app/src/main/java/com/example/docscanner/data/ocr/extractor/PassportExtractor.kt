@@ -76,8 +76,13 @@ class PassportExtractor @Inject constructor() : DocumentExtractor {
         val placeOfBirth = extractLabelBelow(blocks, "Place of Birth")
             ?: ExtractionUtils.PLACE_OF_BIRTH.find(rawText)?.groupValues?.getOrNull(1)?.trim()
 
-        // ── Back-page fields (only extracted / shown when no MRZ = back page) ──
-        val isFrontPage = mrzLines.isNotEmpty()
+        // ── Front/back detection ──────────────────────────────────────────────
+        // Primary: full MRZ parsed successfully.
+        // Fallback: raw OCR text contains "<<" — the MRZ filler character that
+        //           ONLY appears in the passport data-page MRZ, never in normal prose.
+        //           Even when structural MRZ validation fails (garbled line 2),
+        //           the presence of "<<" reliably identifies the data (front) page.
+        val isFrontPage = mrzLines.isNotEmpty() || rawText.contains("<<")
 
         val fatherName = if (isFrontPage) null else
             extractLabelBelow(blocks, "Name of Father")

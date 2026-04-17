@@ -386,8 +386,8 @@ fun AllDocumentsScreen(
                     }
                 }
 
-                // ── Delete button — only for normal multi-select flow ────────
-                if (!isGroupingFlow && !canGroup) {
+                // ── Delete button — always visible in normal multi-select flow ─
+                if (!isGroupingFlow) {
                     Box(
                         Modifier
                             .fillMaxWidth()
@@ -2306,6 +2306,9 @@ private fun GalleryPhotoGrid(
             }
             val gid = doc.docGroupId
             if (gid == null) true
+            // Expand custom groups in select mode so every doc is individually
+            // selectable and "Select All" / delete covers the full group.
+            else if (isSelectMode && selectionEnabled) true
             else seenGroupIds.add(gid)
         }
     }
@@ -2773,6 +2776,7 @@ private fun PassportHalfTile(
     label: String,
     modifier: Modifier = Modifier,
 ) {
+    val ppViolet = Color(0xFF7C3AED)
     Box(
         modifier
             .fillMaxHeight()
@@ -2787,20 +2791,46 @@ private fun PassportHalfTile(
                 modifier = Modifier.fillMaxSize()
             )
         } else {
-            Box(
-                Modifier.fillMaxSize().background(Color.Black.copy(0.04f)),
-                contentAlignment = Alignment.Center
+            // Missing-page placeholder — clearly prompts the user to pair
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .background(ppViolet.copy(alpha = 0.06f))
+                    .border(1.dp, ppViolet.copy(alpha = 0.25f), RoundedCornerShape(4.dp)),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
             ) {
-                Text(label, color = InkDim, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                Icon(
+                    Icons.Default.Add, null,
+                    tint = ppViolet.copy(alpha = 0.5f),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    label,
+                    color = ppViolet.copy(alpha = 0.7f),
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+                Text(
+                    "Long press to pair",
+                    color = ppViolet.copy(alpha = 0.45f),
+                    fontSize = 7.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
             }
         }
 
+        // Side label badge (top-left)
         Box(
             Modifier
                 .align(Alignment.TopStart)
                 .padding(4.dp)
                 .clip(RoundedCornerShape(3.dp))
-                .background(Color.Black.copy(0.55f))
+                .background(if (doc != null) Color.Black.copy(0.55f) else ppViolet.copy(0.7f))
                 .padding(horizontal = 4.dp, vertical = 2.dp)
         ) {
             Text(label, color = Color.White, fontSize = 7.sp, fontWeight = FontWeight.SemiBold)

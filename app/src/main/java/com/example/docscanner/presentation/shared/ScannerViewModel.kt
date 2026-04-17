@@ -1121,7 +1121,9 @@ class ScannerViewModel @Inject constructor(
             address = null,
             rawText = rawText,
             details = details,
-            hasMrz = mrzLines.isNotEmpty()
+            // "<<" is the MRZ filler — present only on the data (front) page.
+            // Fall back to it when full structural MRZ parsing fails due to OCR noise.
+            hasMrz = mrzLines.isNotEmpty() || rawText.contains("<<")
         )
         is ExtractedFields.VoterId -> NormalizedOcrFields(
             name = name,

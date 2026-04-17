@@ -41,8 +41,12 @@ object ExtractionUtils {
     )
 
     // ── Passport ──────────────────────────────────────────────────────────────
-    /** 1 uppercase letter + exactly 7 digits = Indian passport number format */
-    val PASSPORT_NO = Regex("""(?<![A-Z])([A-Z]\d{7})(?!\d)""")
+    /**
+     * 1 uppercase letter + exactly 7 digits = Indian passport number format.
+     * No trailing (?!\d) — MRZ stores the number as K12345671IND… (check digit follows),
+     * so the negative lookahead would block detection on MRZ-only OCR output.
+     */
+    val PASSPORT_NO = Regex("""(?<![A-Z0-9])([A-Z]\d{7})""")
 
     // Back-page passport labels
     /** "Name of Father / Legal Guardian", "Legal Guardian", "Father/Legal Guardian" */
