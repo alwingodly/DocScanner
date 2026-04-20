@@ -75,8 +75,12 @@ fun DocScannerNavHost(
 
     val state        by scannerViewModel.state.collectAsState()
     val mergeState   by mergeViewModel.state.collectAsState()
+    val allDocuments by allDocsViewModel.documents.collectAsState()
     val navBackStack by navController.currentBackStackEntryAsState()
     val currentRoute  = navBackStack?.destination?.route
+    val unclassifiedCount = remember(allDocuments) {
+        allDocuments.count { it.docClassLabel == null || it.docClassLabel == "Other" }
+    }
 
     // ── Viewer anchor: only the IDs are stored; live docs come from the VM ──
     var viewingDocumentId   by remember { mutableStateOf<String?>(null) }
@@ -202,6 +206,7 @@ fun DocScannerNavHost(
                 isSelectMode  = isSelectMode,
                 selectedCount = selectedCount,
                 documentCount = docCount,
+                unclassifiedCount = unclassifiedCount,
                 hasDocuments  = docCount > 0,
                 columnCount   = columnCount,
                 selectedTab   = selectedTab,

@@ -2,6 +2,7 @@ package com.example.docscanner.data.ocr.extractor
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class PanExtractorTest {
@@ -42,5 +43,35 @@ class PanExtractorTest {
 
         assertEquals("Ravi Kumar", result.name)
         assertEquals("Suresh Kumar", result.fatherName)
+    }
+
+    @Test
+    fun `does not return label keywords as pan names`() = runBlocking {
+        val raw = """
+            Name.
+            Father's Name.
+            ABCDE1234F
+            01/01/1990
+        """.trimIndent()
+
+        val result = extractor.extract(emptyList(), raw, docHeight = 0)
+
+        assertNull(result.name)
+        assertNull(result.fatherName)
+    }
+
+    @Test
+    fun `ignores huf style label artifacts when extracting pan name`() = runBlocking {
+        val raw = """
+            Hih Name
+            Ravi Kumar
+            ABCDE1234F
+            01/01/1990
+        """.trimIndent()
+
+        val result = extractor.extract(emptyList(), raw, docHeight = 0)
+
+        assertEquals("Ravi Kumar", result.name)
+        assertNull(result.fatherName)
     }
 }

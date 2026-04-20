@@ -17,9 +17,9 @@ import com.example.docscanner.data.ocr.ExtractionUtils.correctPanNoise
 import com.example.docscanner.data.ocr.ExtractionUtils.formatNameDisplay
 import com.example.docscanner.data.ocr.ExtractionUtils.indianNameScore
 import com.example.docscanner.data.ocr.ExtractionUtils.isHeaderLine
+import com.example.docscanner.data.ocr.ExtractionUtils.isPanLabelLikeName
 import com.example.docscanner.data.ocr.ExtractionUtils.isPanHeaderLine
 import com.example.docscanner.data.ocr.ExtractionUtils.levenshtein
-import com.example.docscanner.data.ocr.ExtractionUtils.nameOk
 import com.example.docscanner.data.ocr.ExtractionUtils.normName
 import com.example.docscanner.data.ocr.ExtractionUtils.normalizeDate
 import com.example.docscanner.data.ocr.ExtractionUtils.sanitizeName
@@ -305,6 +305,7 @@ class PanExtractor @Inject constructor() : DocumentExtractor {
         if (candidate.any { it.isDigit() }) return false
         if (isHeaderLine(candidate)) return false
         if (IS_REL_LINE.containsMatchIn(candidate)) return false
+        if (isPanLabelLikeName(candidate)) return false
 
         val words = candidate.split("\\s+".toRegex()).filter { it.isNotBlank() }
         if (words.isEmpty() || words.size > 6) return false

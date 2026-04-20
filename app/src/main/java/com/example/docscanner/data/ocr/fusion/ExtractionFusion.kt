@@ -6,6 +6,7 @@ import android.util.Log
 import com.example.docscanner.data.ocr.ExtractionUtils
 import com.example.docscanner.data.ocr.ExtractionUtils.formatNameDisplay
 import com.example.docscanner.data.ocr.ExtractionUtils.indianNameScore
+import com.example.docscanner.data.ocr.ExtractionUtils.isPanLabelLikeName
 import com.example.docscanner.data.ocr.ExtractionUtils.levenshtein
 import com.example.docscanner.data.ocr.ExtractionUtils.normName
 import com.example.docscanner.data.ocr.ExtractionUtils.sanitizeName
@@ -193,7 +194,9 @@ class ExtractionFusion @Inject constructor(
 
         val filteredPersons = persons.filterNot { entity ->
             val cleaned = formatNameDisplay(sanitizeName(entity.text))
-            isGovernmentLikeName(cleaned) || isLikelyHeaderEntity(entity, rawText)
+            isGovernmentLikeName(cleaned) ||
+                isLikelyHeaderEntity(entity, rawText) ||
+                isPanLabelLikeName(cleaned)
         }
 
         if (filteredPersons.size < 2) {

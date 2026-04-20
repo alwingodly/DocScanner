@@ -342,6 +342,31 @@ object ExtractionUtils {
         return true
     }
 
+    fun isPanLabelLikeName(candidate: String): Boolean {
+        val normalized = candidate.lowercase()
+            .replace(Regex("""[^\p{L}\s]"""), " ")
+            .replace("\\s+".toRegex(), " ")
+            .trim()
+
+        if (normalized.isBlank()) return false
+        if (
+            normalized == "name" ||
+            normalized == "father name" ||
+            normalized == "fathers name" ||
+            normalized == "father s name" ||
+            normalized == "guardian name" ||
+            normalized == "guardians name" ||
+            normalized == "guardian s name" ||
+            normalized == "date of birth" ||
+            normalized == "signature"
+        ) {
+            return true
+        }
+
+        return normalized.endsWith(" name") &&
+            levenshtein(normalized, "huf name", maxDist = 2) <= 2
+    }
+
     fun isHeaderLine(line: String): Boolean {
         val lower = line.lowercase()
         if (HEADER_PHRASES.any { lower.contains(it) }) return true

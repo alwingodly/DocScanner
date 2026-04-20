@@ -121,6 +121,12 @@ private fun Document.aadhaarSideLabel(): String = when {
 
 private fun Document.isMergeable() = pdfPath == null && !isMergedSource
 
+private fun supportsGenericGrouping(label: String?): Boolean {
+    val normalized = normalizeSectionLabel(label)
+    return !normalized.equals("Aadhaar", ignoreCase = true) &&
+        !normalized.equals("Passport", ignoreCase = true)
+}
+
 enum class DocumentTab { ALL, UNCLASSIFIED }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -365,11 +371,16 @@ fun AllDocumentsScreen(
                 documents.filter { it.id in selectedIds }
             }
             val isGroupingFlow = groupingScopeIds != null
-            // All selected docs are the same non-Aadhaar type → can group
+            // All selected docs are the same generic-groupable type → can group
             val canGroup = remember(selectedDocs) {
+                val normalizedType = selectedDocs
+                    .map { normalizeSectionLabel(it.docClassLabel) }
+                    .distinct()
+                    .singleOrNull()
+
                 selectedDocs.size >= 2 &&
-                        selectedDocs.all { !it.docClassLabel.orEmpty().startsWith("Aadhaar") } &&
-                        selectedDocs.map { it.docClassLabel }.toSet().size == 1
+                    normalizedType != null &&
+                    supportsGenericGrouping(normalizedType)
             }
 
             Column(
@@ -2140,6 +2151,7 @@ private fun GallerySectionedGrid(
             val typeColor = TypeColors[label] ?: InkMid
             val folder = folderByName[label]
             val sectionSelectionEnabled = groupingScopeIds == null || docs.all { it.id in groupingScopeIds }
+            val supportsSectionGrouping = supportsGenericGrouping(label)
 
             if (index > 0) item(key = "spacer_$label") { Spacer(Modifier.height(20.dp)) }
 
@@ -2154,7 +2166,9 @@ private fun GallerySectionedGrid(
                     sectionDocs  = docs,
                     selectedIds  = selectedIds,
                     onSelectSection = { onSelectSection(docs) },
-                    onLongPress  = { onLongPressSection(docs) },
+                    onLongPress  = {
+                        if (supportsSectionGrouping) onLongPressSection(docs)
+                    },
                     isSelectionEnabled = sectionSelectionEnabled,
                 )
             }

@@ -46,6 +46,7 @@ fun MainLayout(
     isSelectMode   : Boolean             = false,
     selectedCount  : Int                 = 0,
     documentCount  : Int                 = 0,
+    unclassifiedCount: Int               = 0,
     hasDocuments   : Boolean             = false,
     columnCount    : Int                 = 3,
     selectedTab    : DocumentTab         = DocumentTab.ALL,
@@ -226,7 +227,11 @@ fun MainLayout(
         Box(Modifier.weight(1f).fillMaxWidth(), content = content)
 
         // ── Bottom tab bar ────────────────────────────────────────────────────
-        BottomTabBar(selectedTab = selectedTab, onTabChange = onTabChange)
+        BottomTabBar(
+            selectedTab = selectedTab,
+            unclassifiedCount = unclassifiedCount,
+            onTabChange = onTabChange
+        )
     }
 }
 
@@ -244,6 +249,7 @@ private val TABS = listOf(
 @Composable
 private fun BottomTabBar(
     selectedTab : DocumentTab,
+    unclassifiedCount: Int,
     onTabChange : (DocumentTab) -> Unit
 ) {
     Column {
@@ -278,6 +284,28 @@ private fun BottomTabBar(
                                 tint     = if (isActive) Coral else InkDim,
                                 modifier = Modifier.size(20.dp)
                             )
+
+                            if (item.tab == DocumentTab.UNCLASSIFIED && unclassifiedCount > 0) {
+                                val badgeText = if (unclassifiedCount > 99) "99+" else unclassifiedCount.toString()
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .offset(x = 11.dp, y = (-6).dp)
+                                        .defaultMinSize(minWidth = 18.dp, minHeight = 18.dp)
+                                        .clip(RoundedCornerShape(9.dp))
+                                        .background(Coral)
+                                        .border(1.dp, BgCard, RoundedCornerShape(9.dp))
+                                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        badgeText,
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                         Text(
                             item.label,
