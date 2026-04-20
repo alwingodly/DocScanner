@@ -672,9 +672,24 @@ class ScannerViewModel @Inject constructor(
                 Log.e("AadhaarDebug", "fetchAadhaarDocs failed", e); emptyList()
             }
 
+        fun canAttachToGroup(groupDocs: List<Document>, side: String?): Boolean {
+            if (groupDocs.isEmpty()) return true
+            if (side == null) return false
+
+            val hasFront = groupDocs.any { it.aadhaarSide == "FRONT" }
+            val hasBack  = groupDocs.any { it.aadhaarSide == "BACK" }
+            if (hasFront && hasBack) return false
+
+            return groupDocs.none { it.aadhaarSide == side }
+        }
+
+        fun freshGroupId(base: String? = null): String =
+            base?.let { "${it}_${System.currentTimeMillis()}" }
+                ?: "aadhaar_grp_${System.currentTimeMillis()}"
+
         // ── Strategy 1: confident key (name + full number, both hashed) ───────
-        val confidentKey = if (fields?.name != null && fields.idNumber != null)
-            extractionFusion.buildAadhaarGroupId(fields.name, fields.idNumber)   // returns hashed ID
+        val confidentKey = if (fields?.name != null && numHash12 != null)
+            extractionFusion.buildAadhaarGroupId(fields.name, rawDigits)
         else null
 
         Log.d("AadhaarDebug", "S1 confidentKey=${confidentKey}")
@@ -691,10 +706,9 @@ class ScannerViewModel @Inject constructor(
                 Log.d("AadhaarDebug", "S1 crossMatch=${crossMatch}")
                 if (crossMatch != null) {
                     val docsInCross  = existingDocs.filter { it.aadhaarGroupId == crossMatch }
-                    val pairComplete = docsInCross.any { it.aadhaarSide == "FRONT" } &&
-                            docsInCross.any { it.aadhaarSide == "BACK" }
-                    Log.d("AadhaarDebug", "S1 crossMatch pairComplete=$pairComplete $docsInCross")
-                    if (!pairComplete) {
+                    val canAttach = canAttachToGroup(docsInCross, thisSide)
+                    Log.d("AadhaarDebug", "S1 crossMatch canAttach=$canAttach size=${docsInCross.size}")
+                    if (canAttach) {
                         Log.d("AadhaarDebug", "S1 → RETURN crossMatch")
                         anchoredGroupId = crossMatch; lastAadhaarGroupId = crossMatch
                         return crossMatch
@@ -703,13 +717,12 @@ class ScannerViewModel @Inject constructor(
             }
 
             val docsInGroup     = existingDocs.filter { it.aadhaarGroupId == confidentKey }
-            val hasCompletePair = docsInGroup.any { it.aadhaarSide == "FRONT" } &&
-                    docsInGroup.any { it.aadhaarSide == "BACK" }
-            Log.d("AadhaarDebug", "S1 docsInGroup=${docsInGroup.size} hasCompletePair=$hasCompletePair")
+            val canAttach = canAttachToGroup(docsInGroup, thisSide)
+            Log.d("AadhaarDebug", "S1 docsInGroup=${docsInGroup.size} canAttach=$canAttach")
 
-            if (hasCompletePair) {
-                val newKey = "${confidentKey}_${System.currentTimeMillis()}"
-                Log.d("AadhaarDebug", "S1 → RETURN newKey (pair full)")
+            if (docsInGroup.isNotEmpty() && !canAttach) {
+                val newKey = freshGroupId(confidentKey)
+                Log.d("AadhaarDebug", "S1 → RETURN newKey (group full or same side exists)")
                 anchoredGroupId = newKey; lastAadhaarGroupId = newKey
                 return newKey
             }
@@ -724,105 +737,39 @@ class ScannerViewModel @Inject constructor(
         // ── Strategy 2: full number hash matches an existing group ─────────────
         if (numHash12 != null) {
             val existingDocs   = fetchAadhaarDocs()
-            val matchedGroupId = existingDocs.mapNotNull { it.aadhaarGroupId }.distinct()
-                .firstOrNull { groupId -> groupId.contains(numHash12) }
-            Log.d("AadhaarDebug", "S2 full-hash match=${matchedGroupId != null}")
-            if (matchedGroupId != null) {
-                lastAadhaarGroupId = matchedGroupId
+            val matchedGroupIds = existingDocs.mapNotNull { it.aadhaarGroupId }
+                .distinct()
+                .filter { groupId -> groupId.contains(numHash12) }
+            val reusableMatch = matchedGroupIds.firstOrNull { groupId ->
+                canAttachToGroup(
+                    existingDocs.filter { it.aadhaarGroupId == groupId },
+                    thisSide
+                )
+            }
+            Log.d("AadhaarDebug", "S2 full-hash matches=${matchedGroupIds.size} reusable=${reusableMatch != null}")
+            if (reusableMatch != null) {
+                lastAadhaarGroupId = reusableMatch
                 Log.d("AadhaarDebug", "S2 → RETURN matched group")
-                return matchedGroupId
+                return reusableMatch
+            }
+            if (matchedGroupIds.isNotEmpty()) {
+                val newKey = freshGroupId(matchedGroupIds.first())
+                anchoredGroupId = newKey
+                lastAadhaarGroupId = newKey
+                Log.d("AadhaarDebug", "S2 → RETURN newKey (matched group already has this side)")
+                return newKey
             }
         } else {
             Log.d("AadhaarDebug", "S2 SKIPPED (no full 12-digit hash)")
         }
 
-        // ── Strategy 3: carry-forward last group if unambiguous ────────────────
-        Log.d("AadhaarDebug", "S3 hasLastGroup=${lastAadhaarGroupId != null} thisSide=$thisSide")
-        if (lastAadhaarGroupId != null && thisSide != null) {
-            val batchGroupsMissingThisSide = inBatchDocs
-                .groupBy { it.groupId }
-                .filter { (_, docs) -> docs.none { it.side == thisSide } }
-                .keys
-            val unambiguous = when {
-                batchGroupsMissingThisSide.isEmpty() -> true
-                batchGroupsMissingThisSide.size == 1 &&
-                        batchGroupsMissingThisSide.contains(lastAadhaarGroupId) -> true
-                else -> false
-            }
-            Log.d("AadhaarDebug",
-                "S3 batchGroupsMissingThisSide.size=${batchGroupsMissingThisSide.size} unambiguous=$unambiguous")
-            if (unambiguous) {
-                Log.d("AadhaarDebug", "S3 → RETURN carry-forward")
-                return lastAadhaarGroupId!!
-            }
-        } else {
-            Log.d("AadhaarDebug", "S3 SKIPPED (no lastGroupId or no thisSide)")
+        // ── Strategy 3+: exact-number-only fallback ───────────────────────────
+        if (numHash12 == null) {
+            Log.d("AadhaarDebug", "S3+ exact-number fallback disabled (no full 12-digit match)")
         }
 
-        // ── Strategy 4: last-4 hash matches exactly one existing group ─────────
-        if (last4Hash != null) {
-            val existingDocs = fetchAadhaarDocs()
-            val allGroupIds  = existingDocs.mapNotNull { it.aadhaarGroupId }.distinct()
-            val matches      = allGroupIds.filter { it.contains(last4Hash) }
-            Log.d("AadhaarDebug", "S4 last4-hash matches=${matches.size}")
-            if (matches.size == 1) {
-                lastAadhaarGroupId = matches.first()
-                Log.d("AadhaarDebug", "S4 → RETURN last4 match")
-                return matches.first()
-            } else {
-                Log.d("AadhaarDebug", "S4 SKIPPED matches.size=${matches.size}")
-            }
-        } else {
-            Log.d("AadhaarDebug", "S4 SKIPPED (no last4 hash)")
-        }
-
-        // ── Strategy 4.5: fill an incomplete pair from batch or DB ────────────
-        if (thisSide != null) {
-            val batchIncomplete = inBatchDocs.groupBy { it.groupId }
-                .filter { (_, docs) -> docs.none { it.side == thisSide } }.keys.toList()
-            Log.d("AadhaarDebug", "S4.5 batchIncomplete=${batchIncomplete.size}")
-
-            if (batchIncomplete.size == 1) {
-                lastAadhaarGroupId = batchIncomplete.first()
-                Log.d("AadhaarDebug", "S4.5 → RETURN batch fill")
-                return batchIncomplete.first()
-            }
-
-            val existingDocs        = fetchAadhaarDocs()
-            val groupsByMissingSide = existingDocs
-                .filter { it.aadhaarGroupId != null }
-                .groupBy { it.aadhaarGroupId!! }
-                .mapValues { (_, docs) ->
-                    val hasFront = docs.any { it.aadhaarSide == "FRONT" }
-                    val hasBack  = docs.any { it.aadhaarSide == "BACK" }
-                    when { hasFront && !hasBack -> "BACK"; hasBack && !hasFront -> "FRONT"; else -> null }
-                }.filter { (_, missingSide) -> missingSide != null }
-
-            val matchingGroups = groupsByMissingSide
-                .filter { (_, missingSide) -> missingSide == thisSide }.keys.toList()
-            Log.d("AadhaarDebug", "S4.5 matchingGroups=${matchingGroups.size}")
-
-            when {
-                matchingGroups.size == 1 -> {
-                    lastAadhaarGroupId = matchingGroups.first()
-                    Log.d("AadhaarDebug", "S4.5 → RETURN DB fill")
-                    return matchingGroups.first()
-                }
-                matchingGroups.size > 1 -> {
-                    val mostRecent = existingDocs
-                        .filter { it.aadhaarGroupId in matchingGroups }
-                        .maxByOrNull { it.createdAt }?.aadhaarGroupId
-                    Log.d("AadhaarDebug", "S4.5 multiple incomplete, mostRecent=${mostRecent != null}")
-                    if (mostRecent != null) { lastAadhaarGroupId = mostRecent; return mostRecent }
-                }
-            }
-            Log.d("AadhaarDebug", "S4.5 FAILED — fell through")
-        }
-
-        // ── Strategy 5 / 6: partial key or timestamp fallback ────────────────
-        val partialKey = if (fields != null)
-            extractionFusion.buildAadhaarGroupId(fields.name, fields.idNumber) else null
-        val result = partialKey ?: "aadhaar_grp_${System.currentTimeMillis()}"
+        val result = numHash12?.let { "ag_n_$it" }
+            ?: "aadhaar_grp_${System.currentTimeMillis()}"
         Log.d("AadhaarDebug", "S5/6 LAST RESORT → ${result.take(20)}")
         lastAadhaarGroupId = result
         return result

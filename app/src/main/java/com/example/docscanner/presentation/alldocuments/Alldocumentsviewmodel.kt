@@ -213,6 +213,12 @@ class AllDocumentsViewModel @Inject constructor(
         }
     }
 
+    fun removeFromAadhaarGroup(document: Document) {
+        viewModelScope.launch {
+            documentRepository.updateAadhaarGroup(document.id, document.aadhaarSide, null)
+        }
+    }
+
     fun manuallyGroupPassport(docId1: String, docId2: String) {
         viewModelScope.launch {
             val doc1 = documents.value.firstOrNull { it.id == docId1 } ?: return@launch

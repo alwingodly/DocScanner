@@ -691,6 +691,7 @@ fun AllDocumentsScreen(
         val isPassport   = currentLabel == "Passport"
         val isInGroup    = doc.docGroupId != null
         val isGroupedAadhaar = doc.aadhaarGroupId != null
+        val isDetachedAadhaarDoc = isAadhaar && isGroupedAadhaar && contextAadhaarGroup == null
 
         ModalBottomSheet(
             onDismissRequest = { contextDoc = null },
@@ -832,6 +833,21 @@ fun AllDocumentsScreen(
                                 Toast.makeText(context, "Now tap another Aadhaar to pair", Toast.LENGTH_SHORT).show()
                             }
                         }
+                        contextDoc = null
+                    }
+                }
+
+                if (isDetachedAadhaarDoc) {
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp))
+
+                    ContextAction(
+                        icon  = Icons.Default.LinkOff,
+                        label = "Remove from Aadhaar pair",
+                        color = InkMid
+                    ) {
+                        viewModel.removeFromAadhaarGroup(doc)
+                        Toast.makeText(context, "Removed from Aadhaar pair", Toast.LENGTH_SHORT).show()
                         contextDoc = null
                     }
                 }
@@ -2422,6 +2438,16 @@ private fun GalleryPhotoGrid(
     var dragState by remember { mutableStateOf(DragState()) }
     val aadhaarGroupsById  = remember(aadhaarGroups)  { aadhaarGroups.associateBy  { it.groupId } }
     val passportGroupsById = remember(passportGroups) { passportGroups.associateBy { it.groupId } }
+    val aadhaarPairDocIds = remember(aadhaarGroups) {
+        aadhaarGroups.flatMap { group ->
+            listOfNotNull(group.frontDoc?.id, group.backDoc?.id)
+        }.toSet()
+    }
+    val passportPairDocIds = remember(passportGroups) {
+        passportGroups.flatMap { group ->
+            listOfNotNull(group.frontDoc?.id, group.backDoc?.id)
+        }.toSet()
+    }
     val renderedDocs = remember(docs, docGroups, aadhaarGroups, passportGroups, isSelectMode, selectionEnabled) {
         val seenGroupIds         = mutableSetOf<String>()
         val seenAadhaarGroupIds  = mutableSetOf<String>()
@@ -2429,6 +2455,7 @@ private fun GalleryPhotoGrid(
         docs.filter { doc ->
             val aadhaarGroupId = doc.aadhaarGroupId
             if (aadhaarGroupId != null &&
+                doc.id in aadhaarPairDocIds &&
                 aadhaarGroupsById.containsKey(aadhaarGroupId) &&
                 (!isSelectMode || !selectionEnabled)
             ) {
@@ -2436,6 +2463,7 @@ private fun GalleryPhotoGrid(
             }
             val ppGroupId = doc.passportGroupId
             if (ppGroupId != null &&
+                doc.id in passportPairDocIds &&
                 passportGroupsById.containsKey(ppGroupId) &&
                 (!isSelectMode || !selectionEnabled)
             ) {
@@ -2493,11 +2521,13 @@ private fun GalleryPhotoGrid(
                         val isUngroupedPassport = remember(doc.docClassLabel, doc.passportGroupId) {
                             doc.docClassLabel == "Passport" && doc.passportGroupId == null
                         }
-                        val aadhaarGroup = remember(doc.aadhaarGroupId, aadhaarGroupsById) {
-                            doc.aadhaarGroupId?.let { aadhaarGroupsById[it] }
+                        val aadhaarGroup = remember(doc.id, doc.aadhaarGroupId, aadhaarGroupsById, aadhaarPairDocIds) {
+                            if (doc.id in aadhaarPairDocIds) doc.aadhaarGroupId?.let { aadhaarGroupsById[it] }
+                            else null
                         }
-                        val passportGroup = remember(doc.passportGroupId, passportGroupsById) {
-                            doc.passportGroupId?.let { passportGroupsById[it] }
+                        val passportGroup = remember(doc.id, doc.passportGroupId, passportGroupsById, passportPairDocIds) {
+                            if (doc.id in passportPairDocIds) doc.passportGroupId?.let { passportGroupsById[it] }
+                            else null
                         }
 
                         Box(
