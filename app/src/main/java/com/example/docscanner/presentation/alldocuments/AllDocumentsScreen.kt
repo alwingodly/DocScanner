@@ -94,6 +94,24 @@ internal val TypeColors = mapOf(
 
 private val ALL_TYPES = DocClassType.entries.map { it.displayName }
 
+private data class GroupMoveTarget(
+    val title: String,
+    val subtitle: String,
+    val currentLabel: String?,
+    val documents: List<Document>
+)
+
+private fun normalizeSectionLabel(label: String?): String = when (label ?: "Other") {
+    "Aadhaar Front", "Aadhaar Back" -> "Aadhaar"
+    else -> label ?: "Other"
+}
+
+private fun resolveSectionLabel(documents: List<Document>): String? =
+    documents
+        .map { normalizeSectionLabel(it.docClassLabel) }
+        .distinct()
+        .singleOrNull()
+
 private fun Document.aadhaarSideLabel(): String = when {
     aadhaarSide == "FRONT" || docClassLabel == "Aadhaar Front" -> "Front"
     aadhaarSide == "BACK" || docClassLabel == "Aadhaar Back" -> "Back"
@@ -148,6 +166,7 @@ fun AllDocumentsScreen(
     var contextAadhaarGroupId    by remember { mutableStateOf<String?>(null) }
     var contextPassportGroupId   by remember { mutableStateOf<String?>(null) }
     var pendingPassportPairId    by remember { mutableStateOf<String?>(null) }
+    var moveGroupTarget by remember { mutableStateOf<GroupMoveTarget?>(null) }
 
 
     val contextAadhaarGroup = remember(contextDoc, aadhaarGroups) {
@@ -187,6 +206,21 @@ fun AllDocumentsScreen(
 
     val hasFolders = filteredGrouped.isNotEmpty()
     val feedbackBottomPadding = if (isSelectMode) 20.dp else 96.dp
+
+    fun openGroupMoveSheet(
+        title: String,
+        subtitle: String,
+        docs: List<Document>
+    ) {
+        val uniqueDocs = docs.distinctBy { it.id }
+        if (uniqueDocs.isEmpty()) return
+        moveGroupTarget = GroupMoveTarget(
+            title = title,
+            subtitle = subtitle,
+            currentLabel = resolveSectionLabel(uniqueDocs),
+            documents = uniqueDocs
+        )
+    }
 
     LaunchedEffect(isSelectMode) {
         if (!isSelectMode) {
@@ -1552,6 +1586,30 @@ fun AllDocumentsScreen(
                 HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
                     modifier = Modifier.padding(horizontal = 20.dp))
 
+                ContextAction(
+                    icon  = Icons.Default.DriveFileMove,
+                    label = "Move to folder",
+                    color = Coral,
+                    trailing = {
+                        Icon(
+                            Icons.Default.ChevronRight,
+                            null,
+                            tint = InkDim,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                ) {
+                    openGroupMoveSheet(
+                        title = groupName,
+                        subtitle = "${groupDocs.size} document${if (groupDocs.size != 1) "s" else ""}",
+                        docs = groupDocs
+                    )
+                    contextGroupId = null
+                }
+
+                HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                    modifier = Modifier.padding(horizontal = 20.dp))
+
                 // Disband
                 ContextAction(
                     icon  = Icons.Default.LinkOff,
@@ -1708,6 +1766,7 @@ fun AllDocumentsScreen(
     if (contextAadhaarGroupId != null && !showGroupRenameDialog) {
         val groupId = contextAadhaarGroupId!!
         val group = aadhaarGroups.firstOrNull { it.groupId == groupId }
+        val groupDocs = listOfNotNull(group?.frontDoc, group?.backDoc)
         val aadhaarBlue = Color(0xFF2563EB)
 
         var showAadhaarRenameDialog by remember { mutableStateOf(false) }
@@ -1776,6 +1835,30 @@ fun AllDocumentsScreen(
                                     ?: group?.displayName
                                     ?: ""
                         showAadhaarRenameDialog = true
+                    }
+
+                    HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                        modifier = Modifier.padding(horizontal = 20.dp))
+
+                    ContextAction(
+                        icon  = Icons.Default.DriveFileMove,
+                        label = "Move to folder",
+                        color = Coral,
+                        trailing = {
+                            Icon(
+                                Icons.Default.ChevronRight,
+                                null,
+                                tint = InkDim,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    ) {
+                        openGroupMoveSheet(
+                            title = group?.displayName ?: "Aadhaar Pair",
+                            subtitle = if (group?.isComplete == true) "Front + Back" else "Incomplete pair",
+                            docs = groupDocs
+                        )
+                        contextAadhaarGroupId = null
                     }
 
                     HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
@@ -1873,6 +1956,7 @@ fun AllDocumentsScreen(
     if (contextPassportGroupId != null) {
         val ppGroupId = contextPassportGroupId!!
         val ppGroup   = passportGroups.firstOrNull { it.groupId == ppGroupId }
+        val ppGroupDocs = listOfNotNull(ppGroup?.frontDoc, ppGroup?.backDoc)
         val ppBlue    = Color(0xFF7C3AED)
         ModalBottomSheet(
             onDismissRequest = { contextPassportGroupId = null },
@@ -1918,6 +2002,28 @@ fun AllDocumentsScreen(
                 }
                 HorizontalDivider(color = StrokeLight, thickness = 0.5.dp)
                 ContextAction(
+                    icon  = Icons.Default.DriveFileMove,
+                    label = "Move to folder",
+                    color = Coral,
+                    trailing = {
+                        Icon(
+                            Icons.Default.ChevronRight,
+                            null,
+                            tint = InkDim,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                ) {
+                    openGroupMoveSheet(
+                        title = ppGroup?.displayName ?: "Passport Pair",
+                        subtitle = if (ppGroup?.isComplete == true) "Data page + Back page" else "Incomplete pair",
+                        docs = ppGroupDocs
+                    )
+                    contextPassportGroupId = null
+                }
+                HorizontalDivider(color = StrokeLight, thickness = 0.5.dp,
+                    modifier = Modifier.padding(horizontal = 20.dp))
+                ContextAction(
                     icon  = Icons.Default.SwapHoriz,
                     label = "Swap Data / Back page",
                     color = Color(0xFF059669)
@@ -1939,6 +2045,31 @@ fun AllDocumentsScreen(
                 }
             }
         }
+    }
+
+    if (moveGroupTarget != null) {
+        val target = moveGroupTarget!!
+        MoveToFolderSheet(
+            title = target.title,
+            subtitle = target.subtitle,
+            currentLabel = target.currentLabel,
+            allFolders = allFolders,
+            groupedByType = groupedByType,
+            onDismiss = { moveGroupTarget = null },
+            onSelect = { folder ->
+                viewModel.changeDocumentSetType(target.documents, folder.docType)
+                Toast.makeText(
+                    context,
+                    if (target.documents.size == 1) {
+                        "Moved to ${folder.name}"
+                    } else {
+                        "Moved ${target.documents.size} documents to ${folder.name}"
+                    },
+                    Toast.LENGTH_SHORT
+                ).show()
+                moveGroupTarget = null
+            }
+        )
     }
 }
 
@@ -2052,6 +2183,9 @@ private fun GallerySectionedGrid(
                             onSelect        = onSelect,
                             selectedOrder   = selectedOrder,
                             aadhaarGroups   = sectionGroups,
+                            docGroups       = docGroups,
+                            onGroupMoreTap  = onGroupMoreTap,
+                            docGroupNames   = docGroupNames,
                             onAadhaarGroupMoreTap = onAadhaarGroupMoreTap,
                             onManualGroup   = onManualGroup,
                             onAddToGroup    = onAddToGroup,
@@ -2090,6 +2224,9 @@ private fun GallerySectionedGrid(
                             onSelect        = onSelect,
                             selectedOrder   = selectedOrder,
                             passportGroups  = ppSectionGroups,
+                            docGroups       = docGroups,
+                            onGroupMoreTap  = onGroupMoreTap,
+                            docGroupNames   = docGroupNames,
                             onPassportGroupMoreTap = onPassportGroupMoreTap,
                             onManualPassportGroup = onManualPassportGroup,
                             onGroupTap      = onGroupTap,
@@ -3080,6 +3217,147 @@ fun ContextAction(
             modifier = Modifier.weight(1f)
         )
         trailing?.invoke()
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MoveToFolderSheet(
+    title: String,
+    subtitle: String,
+    currentLabel: String?,
+    allFolders: List<Folder>,
+    groupedByType: Map<String, List<Document>>,
+    onDismiss: () -> Unit,
+    onSelect: (Folder) -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = BgCard,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            Box(
+                Modifier
+                    .padding(top = 12.dp, bottom = 4.dp)
+                    .width(40.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(StrokeMid)
+            )
+        }
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(bottom = 40.dp)
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.ArrowBack,
+                    null,
+                    tint = Ink,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onDismiss)
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Move to folder",
+                        color = Ink,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        if (subtitle.isBlank()) title else "$title · $subtitle",
+                        color = InkDim,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            HorizontalDivider(color = StrokeLight, thickness = 0.5.dp)
+
+            Text(
+                "FOLDERS",
+                color = InkDim,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.sp,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+            )
+
+            allFolders.forEach { folder ->
+                val isCurrent = folder.docType == currentLabel
+                val folderColor = TypeColors[folder.docType] ?: InkMid
+                val docCount = groupedByType[folder.name]?.size ?: 0
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (isCurrent) Modifier.background(folderColor.copy(0.07f))
+                            else Modifier
+                        )
+                        .clickable {
+                            if (isCurrent) onDismiss() else onSelect(folder)
+                        }
+                        .padding(horizontal = 20.dp, vertical = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Box(
+                        Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(folderColor.copy(0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(folder.icon, fontSize = 17.sp)
+                    }
+
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            folder.name,
+                            color = if (isCurrent) folderColor else Ink,
+                            fontSize = 15.sp,
+                            fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal
+                        )
+                        Text(
+                            if (docCount == 0) "Empty"
+                            else "$docCount document${if (docCount != 1) "s" else ""}",
+                            color = InkDim,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    if (isCurrent) {
+                        Box(
+                            Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .background(folderColor.copy(0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Check,
+                                null,
+                                tint = folderColor,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

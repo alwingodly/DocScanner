@@ -474,28 +474,41 @@ class AllDocumentsViewModel @Inject constructor(
     }
 
     fun changeDocumentType(document: Document, newLabel: String) {
+        val targetDocs = document.docGroupId
+            ?.let { groupId -> documents.value.filter { it.docGroupId == groupId } }
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOf(document)
+
+        val allowAutoPair = targetDocs.size == 1 &&
+            document.docGroupId == null &&
+            document.aadhaarGroupId == null &&
+            document.passportGroupId == null
+
+        changeDocumentSetType(targetDocs, newLabel, allowAutoPair)
+    }
+
+    fun changeDocumentSetType(
+        documentsToChange: List<Document>,
+        newLabel: String,
+        allowAutoPair: Boolean = false
+    ) {
+        val uniqueDocs = documentsToChange.distinctBy { it.id }
+        if (uniqueDocs.isEmpty()) return
+
         viewModelScope.launch {
-            val groupId = document.docGroupId
-            if (groupId != null) {
-                val groupDocs = documents.value.filter { it.docGroupId == groupId }
-                groupDocs.forEach { doc ->
-                    documentRepository.updateDocClassLabel(doc.id, newLabel)
-                    refreshExtractionForType(doc, newLabel)
-                    syncAadhaarMetadata(doc, newLabel)
-                    if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card")
-                        applyMaskingIfNeeded(doc, newLabel)
-                }
-            } else {
+            uniqueDocs.forEach { document ->
                 documentRepository.updateDocClassLabel(document.id, newLabel)
                 refreshExtractionForType(document, newLabel)
                 syncAadhaarMetadata(document, newLabel)
+                syncPassportMetadata(document, newLabel)
                 if (newLabel.startsWith("Aadhaar") || newLabel == "PAN Card")
                     applyMaskingIfNeeded(document, newLabel)
             }
-            // If the user just labelled this document as Passport, try to find
-            // an existing unmatched passport page and pair them automatically.
-            if (newLabel == "Passport" && document.passportGroupId == null) {
-                tryAutoPairPassport(document.id)
+
+            uniqueDocs.singleOrNull()?.let { autoPairDoc ->
+                if (allowAutoPair && newLabel == "Passport" && autoPairDoc.passportGroupId == null) {
+                    tryAutoPairPassport(autoPairDoc.id)
+                }
             }
         }
     }
@@ -521,6 +534,26 @@ class AllDocumentsViewModel @Inject constructor(
                 groupId = null
             )
         }
+    }
+
+    private suspend fun syncPassportMetadata(document: Document, newLabel: String) {
+        if (newLabel == "Passport") return
+        if (
+            document.passportGroupId == null &&
+            document.passportSide == null &&
+            document.passportHolderName == null &&
+            document.passportNumHash == null
+        ) return
+
+        documentRepository.saveDocument(
+            document.copy(
+                docClassLabel = newLabel,
+                passportGroupId = null,
+                passportSide = null,
+                passportHolderName = null,
+                passportNumHash = null
+            )
+        )
     }
 
     private suspend fun applyMaskingIfNeeded(document: Document, label: String) {
@@ -584,6 +617,7 @@ class AllDocumentsViewModel @Inject constructor(
     ): Document {
         val detailsJson = fields.details.toDocumentDetailsJson()
         val resetAadhaar = !newLabel.startsWith("Aadhaar")
+        val resetPassport = newLabel != "Passport"
         val base = copy(
             docClassLabel = newLabel,
             extractedDetailsJson = detailsJson,
@@ -592,7 +626,11 @@ class AllDocumentsViewModel @Inject constructor(
             aadhaarDob = if (resetAadhaar) null else aadhaarDob,
             aadhaarGender = if (resetAadhaar) null else aadhaarGender,
             aadhaarMaskedNumber = if (resetAadhaar) null else aadhaarMaskedNumber,
-            aadhaarAddress = if (resetAadhaar) null else aadhaarAddress
+            aadhaarAddress = if (resetAadhaar) null else aadhaarAddress,
+            passportGroupId = if (resetPassport) null else passportGroupId,
+            passportSide = if (resetPassport) null else passportSide,
+            passportHolderName = if (resetPassport) null else passportHolderName,
+            passportNumHash = if (resetPassport) null else passportNumHash
         )
         return when (fields) {
             is ExtractedFields.AadhaarFront -> base.copy(
